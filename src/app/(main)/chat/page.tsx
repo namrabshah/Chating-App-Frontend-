@@ -8,14 +8,20 @@ export default function ChatPage() {
   const user = useAuthStore((state) => state.user);
 
   return (
-    <div className="flex w-full h-screen overflow-hidden">
+    <div className="flex h-screen w-full overflow-hidden">
       <ConversationList />
-      <div className="flex-1 flex flex-col h-full">
+
+      <div className="flex h-full flex-1 flex-col">
         {user && (
-          <div className="bg-gray-100 px-4 py-1 text-xs text-gray-500 border-b">
-            Logged in as: <span className="font-semibold text-gray-700">{user.name}</span> ({user.email})
+          <div className="border-b bg-gray-100 px-4 py-1 text-xs text-gray-500">
+            Logged in as:{" "}
+            <span className="font-semibold text-gray-700">
+              {user.name}
+            </span>{" "}
+            ({user.email})
           </div>
         )}
+
         <ChatWindow />
       </div>
     </div>
