@@ -11,7 +11,8 @@ import {
 } from "@/services/message.services";
 
 import { useAuthStore } from "@/store/auth.store";
-
+import { connectSocket } from "@/lib/socket";
+import { getToken } from "@/lib/auth";
 interface ConversationDetails {
   id: number;
   otherUser: {
@@ -95,7 +96,32 @@ export function ChatWindow() {
   // ========================================
   // AUTO SCROLL TO LATEST MESSAGE
   // ========================================
+  useEffect(() => {
+    const token = getToken();
 
+    if (!token) {
+      console.warn("Socket: No authentication token found");
+      return;
+    }
+
+    const socket = connectSocket(token);
+
+    const handleConnect = () => {
+      console.log("SOCKET CONNECTED:", socket.id);
+    };
+
+    const handleDisconnect = () => {
+      console.log("SOCKET DISCONNECTED");
+    };
+
+    socket.on("connect", handleConnect);
+    socket.on("disconnect", handleDisconnect);
+
+    return () => {
+      socket.off("connect", handleConnect);
+      socket.off("disconnect", handleDisconnect);
+    };
+  }, []);
   useEffect(() => {
     if (!messagesEndRef.current) return;
 
@@ -299,8 +325,8 @@ export function ChatWindow() {
                 >
                   <div
                     className={`max-w-[70%] rounded-2xl px-4 py-2 ${isMine
-                        ? "rounded-br-md bg-blue-600 text-white"
-                        : "rounded-bl-md bg-gray-100 text-gray-800"
+                      ? "rounded-br-md bg-blue-600 text-white"
+                      : "rounded-bl-md bg-gray-100 text-gray-800"
                       }`}
                   >
                     {/* Message */}
@@ -311,8 +337,8 @@ export function ChatWindow() {
                     {/* Time + Status */}
                     <div
                       className={`mt-1 text-[10px] ${isMine
-                          ? "text-blue-100"
-                          : "text-gray-400"
+                        ? "text-blue-100"
+                        : "text-gray-400"
                         }`}
                     >
                       {new Date(message.createdAt).toLocaleTimeString([], {

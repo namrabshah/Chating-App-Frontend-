@@ -37,21 +37,16 @@ export const createConversation = async (
 ): Promise<CreateConversationResponse> => {
   const response = await api.post<CreateConversationResponse>(
     "/conversations",
-    {
-      userId,
-    }
+    { userId }
   );
 
   return response.data;
 };
 
-export const getMyConversations = async (): Promise<
-  Conversation[]
-> => {
-  const response =
-    await api.get<GetConversationsResponse>(
-      "/conversations"
-    );
+export const getMyConversations = async (): Promise<Conversation[]> => {
+  const response = await api.get<GetConversationsResponse>(
+    "/conversations"
+  );
 
   return response.data.conversations;
 };
@@ -59,10 +54,9 @@ export const getMyConversations = async (): Promise<
 export const getConversationDetails = async (
   conversationId: number
 ): Promise<ConversationDetails> => {
-  const response =
-    await api.get<ConversationDetailsResponse>(
-      `/conversations/${conversationId}`
-    );
+  const response = await api.get<ConversationDetailsResponse>(
+    `/conversations/${conversationId}`
+  );
 
   return response.data.conversation;
 };

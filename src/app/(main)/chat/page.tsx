@@ -11,9 +11,9 @@ export default function ChatPage() {
     <div className="flex h-screen w-full overflow-hidden">
       <ConversationList />
 
-      <div className="flex h-full flex-1 flex-col">
+      <div className="flex h-full min-w-0 flex-1 flex-col">
         {user && (
-          <div className="border-b bg-gray-100 px-4 py-1 text-xs text-gray-500">
+          <div className="shrink-0 border-b bg-gray-100 px-4 py-1 text-xs text-gray-500">
             Logged in as:{" "}
             <span className="font-semibold text-gray-700">
               {user.name}
