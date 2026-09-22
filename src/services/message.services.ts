@@ -44,3 +44,13 @@ export const sendMessage = async (
 
   return response.data;
 };
+
+export const markConversationAsRead = async (
+  conversationId: number
+): Promise<{ success: boolean; updatedCount?: number }> => {
+  const response = await api.patch<{ success: boolean; updatedCount?: number }>(
+    `/messages/${conversationId}/read`
+  );
+
+  return response.data;
+};

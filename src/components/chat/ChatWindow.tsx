@@ -7,12 +7,14 @@ import { getConversationDetails } from "@/services/conversation.service";
 import {
   getMessages,
   sendMessage,
+  markConversationAsRead,
   Message,
 } from "@/services/message.services";
 
 import { useAuthStore } from "@/store/auth.store";
 import { connectSocket } from "@/lib/socket";
 import { getToken } from "@/lib/auth";
+
 interface ConversationDetails {
   id: number;
   otherUser: {
@@ -23,6 +25,22 @@ interface ConversationDetails {
     isOnline?: boolean;
     lastSeen?: string | null;
   };
+}
+
+interface DeliveryUpdate {
+  messageId: number;
+  conversationId: number;
+  senderId: number;
+  recipientId: number;
+  isDelivered: boolean;
+}
+
+interface ReadUpdate {
+  messageId: number;
+  conversationId: number;
+  senderId: number;
+  recipientId: number;
+  isRead: boolean;
 }
 
 export function ChatWindow() {
@@ -72,6 +90,13 @@ export function ChatWindow() {
 
         setConversation(conversationData);
         setMessages(Array.isArray(messagesData) ? messagesData : []);
+
+        // Mark unread messages as read in DB when opening conversation
+        try {
+          await markConversationAsRead(conversationId);
+        } catch (err) {
+          console.error("Failed to mark conversation read on load:", err);
+        }
       } catch (error) {
         if (cancelled) return;
 
@@ -94,8 +119,9 @@ export function ChatWindow() {
   }, [conversationId]);
 
   // ========================================
-  // AUTO SCROLL TO LATEST MESSAGE
+  // SOCKET LISTENERS & REALTIME STATUS UPDATES
   // ========================================
+
   useEffect(() => {
     const token = getToken();
 
@@ -108,20 +134,129 @@ export function ChatWindow() {
 
     const handleConnect = () => {
       console.log("SOCKET CONNECTED:", socket.id);
+      if (conversationId && !Number.isNaN(conversationId)) {
+        socket.emit("join_conversation", { conversationId });
+        socket.emit("message_read", { conversationId });
+        console.log("[RECIPIENT] READ ACK SENT", { conversationId });
+      }
     };
 
     const handleDisconnect = () => {
       console.log("SOCKET DISCONNECTED");
     };
 
+    const handleNewMessage = (newMessage: Message) => {
+      console.log("[RECIPIENT] NEW MESSAGE RECEIVED", newMessage);
+
+      if (
+        !conversationId ||
+        Number.isNaN(conversationId) ||
+        Number(newMessage.conversationId) !== Number(conversationId)
+      ) {
+        return;
+      }
+
+      setMessages((previousMessages) => {
+        const exists = previousMessages.some(
+          (msg) => Number(msg.id) === Number(newMessage.id)
+        );
+
+        if (exists) {
+          return previousMessages;
+        }
+
+        return [...previousMessages, newMessage];
+      });
+
+      // If message is from the other user, emit delivery ACK (and read ACK if conversation active)
+      if (Number(newMessage.senderId) !== Number(currentUser?.id)) {
+        socket.emit("message_delivered", {
+          messageId: newMessage.id,
+          conversationId: newMessage.conversationId,
+        });
+
+        console.log("[RECIPIENT] DELIVERY ACK SENT", {
+          messageId: newMessage.id,
+          conversationId: newMessage.conversationId,
+        });
+
+        socket.emit("message_read", {
+          messageId: newMessage.id,
+          conversationId: newMessage.conversationId,
+        });
+
+        console.log("[RECIPIENT] READ ACK SENT", {
+          messageId: newMessage.id,
+          conversationId: newMessage.conversationId,
+        });
+      }
+    };
+
+    const handleDeliveryUpdate = (data: DeliveryUpdate) => {
+      console.log("[SENDER] MESSAGE DELIVERY UPDATED", data);
+
+      if (
+        !conversationId ||
+        Number.isNaN(conversationId) ||
+        Number(data.conversationId) !== Number(conversationId)
+      ) {
+        return;
+      }
+
+      setMessages((previousMessages) =>
+        previousMessages.map((msg) =>
+          Number(msg.id) === Number(data.messageId)
+            ? { ...msg, isDelivered: data.isDelivered }
+            : msg
+        )
+      );
+    };
+
+    const handleReadUpdate = (data: ReadUpdate) => {
+      console.log("[SENDER] MESSAGE READ UPDATED", data);
+
+      if (
+        !conversationId ||
+        Number.isNaN(conversationId) ||
+        Number(data.conversationId) !== Number(conversationId)
+      ) {
+        return;
+      }
+
+      setMessages((previousMessages) =>
+        previousMessages.map((msg) =>
+          Number(msg.id) === Number(data.messageId)
+            ? { ...msg, isDelivered: true, isRead: data.isRead }
+            : msg
+        )
+      );
+    };
+
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
+    socket.on("new_message", handleNewMessage);
+    socket.on("message_delivery_updated", handleDeliveryUpdate);
+    socket.on("message_read_updated", handleReadUpdate);
+
+    if (socket.connected && conversationId && !Number.isNaN(conversationId)) {
+      socket.emit("join_conversation", { conversationId });
+      socket.emit("message_read", { conversationId });
+      console.log("[RECIPIENT] READ ACK SENT", { conversationId });
+    }
 
     return () => {
       socket.off("connect", handleConnect);
       socket.off("disconnect", handleDisconnect);
+      socket.off("new_message", handleNewMessage);
+      socket.off("message_delivery_updated", handleDeliveryUpdate);
+      socket.off("message_read_updated", handleReadUpdate);
     };
-  }, []);
+  }, [conversationId, currentUser?.id]);
+
+  // ========================================
+  // AUTO SCROLL TO LATEST MESSAGE
+  // ========================================
+
   useEffect(() => {
     if (!messagesEndRef.current) return;
 
@@ -147,7 +282,7 @@ export function ChatWindow() {
 
       const response = await sendMessage(conversationId, text);
 
-      console.log("SEND MESSAGE RESPONSE:", response);
+      console.log("[SENDER] SEND MESSAGE RESPONSE", response);
 
       if (!response?.success || !response?.message) {
         console.error("Invalid send message response:", response);
@@ -155,11 +290,12 @@ export function ChatWindow() {
       }
 
       const newMessage = response.message;
+      console.log("[SENDER] MESSAGE SENT", newMessage);
 
-      // Add new message immediately to UI
+      // Add new message immediately to UI with initial ✓ state
       setMessages((previousMessages) => {
         const alreadyExists = previousMessages.some(
-          (message) => message.id === newMessage.id
+          (msg) => Number(msg.id) === Number(newMessage.id)
         );
 
         if (alreadyExists) {
@@ -187,6 +323,48 @@ export function ChatWindow() {
       event.preventDefault();
       handleSendMessage();
     }
+  };
+
+  // ========================================
+  // MESSAGE STATUS ICON RENDERER
+  // ========================================
+
+  const renderMessageStatus = (message: Message, isMine: boolean) => {
+    if (!isMine) return null;
+
+    if (message.isRead) {
+      // Double blue tick: ✓✓ (Read)
+      return (
+        <span
+          className="ml-1.5 inline-flex items-center text-[12px] font-bold text-sky-300"
+          title="Read"
+        >
+          ✓✓
+        </span>
+      );
+    }
+
+    if (message.isDelivered) {
+      // Double grey tick: ✓✓ (Delivered)
+      return (
+        <span
+          className="ml-1.5 inline-flex items-center text-[12px] font-medium text-gray-300"
+          title="Delivered"
+        >
+          ✓✓
+        </span>
+      );
+    }
+
+    // Single grey tick: ✓ (Sent)
+    return (
+      <span
+        className="ml-1.5 inline-flex items-center text-[12px] font-medium text-gray-300"
+        title="Sent"
+      >
+        ✓
+      </span>
+    );
   };
 
   // ========================================
@@ -334,28 +512,22 @@ export function ChatWindow() {
                       {message.content}
                     </p>
 
-                    {/* Time + Status */}
+                    {/* Time + Status Ticks */}
                     <div
-                      className={`mt-1 text-[10px] ${isMine
+                      className={`mt-1 flex items-center justify-end text-[10px] ${isMine
                         ? "text-blue-100"
                         : "text-gray-400"
                         }`}
                     >
-                      {new Date(message.createdAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
+                      <span>
+                        {new Date(message.createdAt).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
 
-                      {/* Our message status */}
-                      {isMine && (
-                        <span className="ml-2 font-medium">
-                          {message.isRead
-                            ? "✓✓"
-                            : message.isDelivered
-                              ? "✓✓"
-                              : "✓"}
-                        </span>
-                      )}
+                      {/* WhatsApp Style Status Ticks */}
+                      {renderMessageStatus(message, isMine)}
                     </div>
                   </div>
                 </div>
