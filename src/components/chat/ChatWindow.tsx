@@ -137,7 +137,7 @@ export function ChatWindow() {
       if (conversationId && !Number.isNaN(conversationId)) {
         socket.emit("join_conversation", { conversationId });
         socket.emit("message_read", { conversationId });
-        console.log("[RECIPIENT] READ ACK SENT", { conversationId });
+        console.log("[RECIPIENT] MESSAGE READ ACK SENT", { conversationId });
       }
     };
 
@@ -146,6 +146,13 @@ export function ChatWindow() {
     };
 
     const handleNewMessage = (newMessage: Message) => {
+      console.log("DELIVERY DEBUG - NEW MESSAGE:", {
+        messageId: newMessage.id,
+        conversationId: newMessage.conversationId,
+        senderId: newMessage.senderId,
+        currentUserId: currentUser?.id,
+      });
+
       console.log("[RECIPIENT] NEW MESSAGE RECEIVED", newMessage);
 
       if (
@@ -170,22 +177,24 @@ export function ChatWindow() {
 
       // If message is from the other user, emit delivery ACK (and read ACK if conversation active)
       if (Number(newMessage.senderId) !== Number(currentUser?.id)) {
+        console.log("DELIVERY DEBUG - SENDING ACK:", {
+          messageId: newMessage.id,
+          conversationId: newMessage.conversationId,
+        });
+
         socket.emit("message_delivered", {
           messageId: newMessage.id,
           conversationId: newMessage.conversationId,
         });
 
-        console.log("[RECIPIENT] DELIVERY ACK SENT", {
-          messageId: newMessage.id,
-          conversationId: newMessage.conversationId,
-        });
+        console.log("DELIVERY DEBUG - ACK EMITTED");
 
         socket.emit("message_read", {
           messageId: newMessage.id,
           conversationId: newMessage.conversationId,
         });
 
-        console.log("[RECIPIENT] READ ACK SENT", {
+        console.log("[RECIPIENT] MESSAGE READ ACK SENT", {
           messageId: newMessage.id,
           conversationId: newMessage.conversationId,
         });
@@ -193,7 +202,7 @@ export function ChatWindow() {
     };
 
     const handleDeliveryUpdate = (data: DeliveryUpdate) => {
-      console.log("[SENDER] MESSAGE DELIVERY UPDATED", data);
+      console.log("DELIVERY DEBUG - UPDATE RECEIVED BY SENDER:", data);
 
       if (
         !conversationId ||
@@ -206,7 +215,7 @@ export function ChatWindow() {
       setMessages((previousMessages) =>
         previousMessages.map((msg) =>
           Number(msg.id) === Number(data.messageId)
-            ? { ...msg, isDelivered: data.isDelivered }
+            ? { ...msg, isDelivered: true }
             : msg
         )
       );
@@ -241,7 +250,7 @@ export function ChatWindow() {
     if (socket.connected && conversationId && !Number.isNaN(conversationId)) {
       socket.emit("join_conversation", { conversationId });
       socket.emit("message_read", { conversationId });
-      console.log("[RECIPIENT] READ ACK SENT", { conversationId });
+      console.log("[RECIPIENT] MESSAGE READ ACK SENT", { conversationId });
     }
 
     return () => {
@@ -282,11 +291,10 @@ export function ChatWindow() {
 
       const response = await sendMessage(conversationId, text);
 
-      console.log("[SENDER] SEND MESSAGE RESPONSE", response);
+      console.log("SEND MESSAGE RESPONSE:", response);
 
       if (!response?.success || !response?.message) {
-        console.error("Invalid send message response:", response);
-        return;
+        throw new Error("Invalid send message response");
       }
 
       const newMessage = response.message;

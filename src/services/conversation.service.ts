@@ -1,8 +1,18 @@
 import api from "@/lib/axios";
 import { User } from "@/types/auth";
 
+export interface LastMessage {
+  id: number;
+  content: string;
+  senderId: number;
+  createdAt: string;
+}
+
 export interface Conversation {
   id: number;
+  otherUser: User;
+  lastMessage: LastMessage | null;
+  unreadCount: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -20,12 +30,7 @@ export interface GetConversationsResponse {
   conversations: Conversation[];
 }
 
-export interface ConversationDetails {
-  id: number;
-  otherUser: User;
-  createdAt: string;
-  updatedAt: string;
-}
+export interface ConversationDetails extends Conversation {}
 
 export interface ConversationDetailsResponse {
   success: boolean;
@@ -47,6 +52,8 @@ export const getMyConversations = async (): Promise<Conversation[]> => {
   const response = await api.get<GetConversationsResponse>(
     "/conversations"
   );
+
+  console.log("CONVERSATIONS API RESPONSE:", response.data);
 
   return response.data.conversations;
 };

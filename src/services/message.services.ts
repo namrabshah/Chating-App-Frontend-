@@ -54,3 +54,13 @@ export const markConversationAsRead = async (
 
   return response.data;
 };
+
+export const markMessageAsRead = async (
+  messageId: number
+): Promise<{ success: boolean; message?: string; data?: any }> => {
+  const response = await api.patch<{ success: boolean; message?: string; data?: any }>(
+    `/messages/${messageId}/read`
+  );
+
+  return response.data;
+};
