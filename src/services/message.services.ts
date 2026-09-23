@@ -37,9 +37,21 @@ export const sendMessage = async (
   conversationId: number,
   content: string
 ): Promise<SendMessageResponse> => {
+  console.log(
+    "MESSAGE SERVICE POST:",
+    `/messages/${conversationId}`
+  );
+
   const response = await api.post<SendMessageResponse>(
     `/messages/${conversationId}`,
-    { content }
+    {
+      content,
+    }
+  );
+
+  console.log(
+    "MESSAGE SERVICE RESPONSE:",
+    response.data
   );
 
   return response.data;

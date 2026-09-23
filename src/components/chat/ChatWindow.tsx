@@ -164,15 +164,16 @@ export function ChatWindow() {
       }
 
       setMessages((previousMessages) => {
+        const incomingMessage = newMessage;
         const exists = previousMessages.some(
-          (msg) => Number(msg.id) === Number(newMessage.id)
+          (item) => Number(item.id) === Number(incomingMessage.id)
         );
 
         if (exists) {
           return previousMessages;
         }
 
-        return [...previousMessages, newMessage];
+        return [...previousMessages, incomingMessage];
       });
 
       // If message is from the other user, emit delivery ACK (and read ACK if conversation active)
@@ -289,34 +290,34 @@ export function ChatWindow() {
     try {
       setSending(true);
 
+      console.log("1. SEND CLICKED");
+      console.log("2. CALLING MESSAGE API");
+
       const response = await sendMessage(conversationId, text);
 
-      console.log("SEND MESSAGE RESPONSE:", response);
+      console.log("3. MESSAGE API RESPONSE:", response);
 
       if (!response?.success || !response?.message) {
-        throw new Error("Invalid send message response");
+        throw new Error("Message API returned invalid response");
       }
 
       const newMessage = response.message;
-      console.log("[SENDER] MESSAGE SENT", newMessage);
 
-      // Add new message immediately to UI with initial ✓ state
       setMessages((previousMessages) => {
-        const alreadyExists = previousMessages.some(
-          (msg) => Number(msg.id) === Number(newMessage.id)
+        const exists = previousMessages.some(
+          (message) => Number(message.id) === Number(newMessage.id)
         );
 
-        if (alreadyExists) {
+        if (exists) {
           return previousMessages;
         }
 
         return [...previousMessages, newMessage];
       });
 
-      // Clear input only after successful message
       setContent("");
     } catch (error) {
-      console.error("Send message error:", error);
+      console.error("MESSAGE API ERROR:", error);
     } finally {
       setSending(false);
     }
