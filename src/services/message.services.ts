@@ -1,15 +1,7 @@
 import api from "@/lib/axios";
+import { Message } from "@/types/message";
 
-export interface Message {
-  id: number;
-  conversationId: number;
-  senderId: number;
-  content: string;
-  isDelivered: boolean;
-  isRead: boolean;
-  createdAt: string;
-  updatedAt?: string;
-}
+export type { Message };
 
 export interface GetMessagesResponse {
   success: boolean;
@@ -35,8 +27,19 @@ export const getMessages = async (
 
 export const sendMessage = async (
   conversationId: number,
-  content: string
+  content?: string,
+  file?: File | null
 ): Promise<SendMessageResponse> => {
+  const formData = new FormData();
+
+  if (content?.trim()) {
+    formData.append("content", content.trim());
+  }
+
+  if (file) {
+    formData.append("file", file);
+  }
+
   console.log(
     "MESSAGE SERVICE POST:",
     `/messages/${conversationId}`
@@ -44,9 +47,7 @@ export const sendMessage = async (
 
   const response = await api.post<SendMessageResponse>(
     `/messages/${conversationId}`,
-    {
-      content,
-    }
+    formData
   );
 
   console.log(
@@ -69,10 +70,12 @@ export const markConversationAsRead = async (
 
 export const markMessageAsRead = async (
   messageId: number
-): Promise<{ success: boolean; message?: string; data?: any }> => {
-  const response = await api.patch<{ success: boolean; message?: string; data?: any }>(
-    `/messages/${messageId}/read`
-  );
+): Promise<{ success: boolean; message?: string; data?: unknown }> => {
+  const response = await api.patch<{
+    success: boolean;
+    message?: string;
+    data?: unknown;
+  }>(`/messages/${messageId}/read`);
 
   return response.data;
 };

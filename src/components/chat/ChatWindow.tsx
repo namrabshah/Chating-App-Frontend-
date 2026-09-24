@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import axios from "axios";
 
 import { getConversationDetails } from "@/services/conversation.service";
 import {
@@ -14,6 +15,12 @@ import {
 import { useAuthStore } from "@/store/auth.store";
 import { connectSocket } from "@/lib/socket";
 import { getToken } from "@/lib/auth";
+import {
+  ACCEPTED_FILE_TYPES,
+  validateAttachmentFile,
+} from "@/lib/file";
+import { AttachmentPreview } from "@/components/chat/AttachmentPreview";
+import { AttachmentMessage } from "@/components/chat/AttachmentMessage";
 
 interface ConversationDetails {
   id: number;
@@ -55,11 +62,14 @@ export function ChatWindow() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [content, setContent] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Convert conversation ID safely
   const conversationId = conversationIdParam
     ? Number(conversationIdParam)
     : null;
@@ -90,8 +100,10 @@ export function ChatWindow() {
 
         setConversation(conversationData);
         setMessages(Array.isArray(messagesData) ? messagesData : []);
+        setSelectedFile(null);
+        setContent("");
+        setSendError(null);
 
-        // Mark unread messages as read in DB when opening conversation
         try {
           await markConversationAsRead(conversationId);
         } catch (err) {
@@ -164,19 +176,17 @@ export function ChatWindow() {
       }
 
       setMessages((previousMessages) => {
-        const incomingMessage = newMessage;
         const exists = previousMessages.some(
-          (item) => Number(item.id) === Number(incomingMessage.id)
+          (item) => Number(item.id) === Number(newMessage.id)
         );
 
         if (exists) {
           return previousMessages;
         }
 
-        return [...previousMessages, incomingMessage];
+        return [...previousMessages, newMessage];
       });
 
-      // If message is from the other user, emit delivery ACK (and read ACK if conversation active)
       if (Number(newMessage.senderId) !== Number(currentUser?.id)) {
         console.log("DELIVERY DEBUG - SENDING ACK:", {
           messageId: newMessage.id,
@@ -274,7 +284,37 @@ export function ChatWindow() {
       behavior: "smooth",
       block: "end",
     });
-  }, [messages]);
+  }, [messages, selectedFile]);
+
+  // ========================================
+  // FILE PICKER
+  // ========================================
+
+  const handleAttachClick = () => {
+    if (sending) return;
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] || null;
+    event.target.value = "";
+
+    if (!file) return;
+
+    const validationError = validateAttachmentFile(file);
+    if (validationError) {
+      setSendError(validationError);
+      return;
+    }
+
+    setSendError(null);
+    setSelectedFile(file);
+  };
+
+  const handleRemoveAttachment = () => {
+    setSelectedFile(null);
+    setSendError(null);
+  };
 
   // ========================================
   // SEND MESSAGE
@@ -283,17 +323,30 @@ export function ChatWindow() {
   const handleSendMessage = async () => {
     const text = content.trim();
 
-    if (!text) return;
+    if (!text && !selectedFile) return;
     if (!conversationId || Number.isNaN(conversationId)) return;
     if (sending) return;
 
+    if (selectedFile) {
+      const validationError = validateAttachmentFile(selectedFile);
+      if (validationError) {
+        setSendError(validationError);
+        return;
+      }
+    }
+
     try {
       setSending(true);
+      setSendError(null);
 
       console.log("1. SEND CLICKED");
       console.log("2. CALLING MESSAGE API");
 
-      const response = await sendMessage(conversationId, text);
+      const response = await sendMessage(
+        conversationId,
+        text || undefined,
+        selectedFile
+      );
 
       console.log("3. MESSAGE API RESPONSE:", response);
 
@@ -316,8 +369,24 @@ export function ChatWindow() {
       });
 
       setContent("");
+      setSelectedFile(null);
     } catch (error) {
       console.error("MESSAGE API ERROR:", error);
+
+      let message = "Failed to send message. Please try again.";
+
+      if (axios.isAxiosError(error)) {
+        const apiMessage = error.response?.data?.message;
+        if (typeof apiMessage === "string" && apiMessage.trim()) {
+          message = apiMessage;
+        } else if (error.message === "Network Error") {
+          message = "Network error. Check your connection and retry.";
+        }
+      } else if (error instanceof Error && error.message) {
+        message = error.message;
+      }
+
+      setSendError(message);
     } finally {
       setSending(false);
     }
@@ -342,7 +411,6 @@ export function ChatWindow() {
     if (!isMine) return null;
 
     if (message.isRead) {
-      // Double blue tick: ✓✓ (Read)
       return (
         <span
           className="ml-1.5 inline-flex items-center text-[12px] font-bold text-sky-300"
@@ -354,7 +422,6 @@ export function ChatWindow() {
     }
 
     if (message.isDelivered) {
-      // Double grey tick: ✓✓ (Delivered)
       return (
         <span
           className="ml-1.5 inline-flex items-center text-[12px] font-medium text-gray-300"
@@ -365,7 +432,6 @@ export function ChatWindow() {
       );
     }
 
-    // Single grey tick: ✓ (Sent)
     return (
       <span
         className="ml-1.5 inline-flex items-center text-[12px] font-medium text-gray-300"
@@ -396,66 +462,38 @@ export function ChatWindow() {
     );
   }
 
-  // ========================================
-  // INVALID CONVERSATION ID
-  // ========================================
-
   if (!conversationId || Number.isNaN(conversationId)) {
     return (
       <div className="flex flex-1 items-center justify-center bg-white">
-        <p className="text-sm text-red-500">
-          Invalid conversation
-        </p>
+        <p className="text-sm text-red-500">Invalid conversation</p>
       </div>
     );
   }
-
-  // ========================================
-  // LOADING
-  // ========================================
 
   if (loading) {
     return (
       <div className="flex flex-1 items-center justify-center bg-white">
-        <p className="text-sm text-gray-500">
-          Loading messages...
-        </p>
+        <p className="text-sm text-gray-500">Loading messages...</p>
       </div>
     );
   }
 
-  // ========================================
-  // CONVERSATION NOT FOUND
-  // ========================================
-
   if (!conversation) {
     return (
       <div className="flex flex-1 items-center justify-center bg-white">
-        <p className="text-sm text-red-500">
-          Unable to load conversation
-        </p>
+        <p className="text-sm text-red-500">Unable to load conversation</p>
       </div>
     );
   }
 
   const otherUser = conversation.otherUser;
-
-  // ========================================
-  // CHAT UI
-  // ========================================
+  const canSend = Boolean(content.trim() || selectedFile) && !sending;
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col bg-white">
-
-      {/* ================================== */}
       {/* CHAT HEADER */}
-      {/* ================================== */}
-
       <div className="flex shrink-0 items-center gap-3 border-b px-5 py-3">
-
-        {/* Avatar */}
         <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-blue-100 font-semibold text-blue-600">
-
           {otherUser.avatar ? (
             <img
               src={otherUser.avatar}
@@ -466,13 +504,11 @@ export function ChatWindow() {
             otherUser.name.charAt(0).toUpperCase()
           )}
 
-          {/* Online Dot */}
           {otherUser.isOnline && (
             <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white bg-green-500" />
           )}
         </div>
 
-        {/* User Info */}
         <div className="min-w-0">
           <h2 className="truncate font-semibold text-gray-800">
             {otherUser.name}
@@ -484,49 +520,47 @@ export function ChatWindow() {
         </div>
       </div>
 
-      {/* ================================== */}
       {/* MESSAGES CONTAINER */}
-      {/* ================================== */}
-
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
-
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-5">
         {messages.length === 0 ? (
           <div className="flex h-full items-center justify-center">
-            <p className="text-sm text-gray-400">
-              No messages yet
-            </p>
+            <p className="text-sm text-gray-400">No messages yet</p>
           </div>
         ) : (
           <div className="flex w-full flex-col gap-2">
             {messages.map((message) => {
-              // Other user's messages = LEFT
-              // Our messages = RIGHT
               const isMine =
                 Number(message.senderId) !== Number(otherUser.id);
 
               return (
                 <div
                   key={message.id}
-                  className={`flex w-full ${isMine ? "justify-end" : "justify-start"
-                    }`}
+                  className={`flex w-full ${
+                    isMine ? "justify-end" : "justify-start"
+                  }`}
                 >
                   <div
-                    className={`max-w-[70%] rounded-2xl px-4 py-2 ${isMine
-                      ? "rounded-br-md bg-blue-600 text-white"
-                      : "rounded-bl-md bg-gray-100 text-gray-800"
-                      }`}
+                    className={`max-w-[min(70%,24rem)] overflow-hidden rounded-2xl px-3 py-2 sm:px-4 ${
+                      isMine
+                        ? "rounded-br-md bg-blue-600 text-white"
+                        : "rounded-bl-md bg-gray-100 text-gray-800"
+                    }`}
                   >
-                    {/* Message */}
-                    <p className="break-words text-sm">
-                      {message.content}
-                    </p>
+                    {message.attachmentUrl && (
+                      <AttachmentMessage
+                        message={message}
+                        isMine={isMine}
+                      />
+                    )}
 
-                    {/* Time + Status Ticks */}
+                    {message.content ? (
+                      <p className="break-words text-sm">{message.content}</p>
+                    ) : null}
+
                     <div
-                      className={`mt-1 flex items-center justify-end text-[10px] ${isMine
-                        ? "text-blue-100"
-                        : "text-gray-400"
-                        }`}
+                      className={`mt-1 flex items-center justify-end text-[10px] ${
+                        isMine ? "text-blue-100" : "text-gray-400"
+                      }`}
                     >
                       <span>
                         {new Date(message.createdAt).toLocaleTimeString([], {
@@ -535,51 +569,72 @@ export function ChatWindow() {
                         })}
                       </span>
 
-                      {/* WhatsApp Style Status Ticks */}
                       {renderMessageStatus(message, isMine)}
                     </div>
                   </div>
                 </div>
               );
             })}
-            {/* Auto scroll target */}
             <div ref={messagesEndRef} />
           </div>
         )}
       </div>
 
-      {/* ================================== */}
       {/* MESSAGE INPUT */}
-      {/* ================================== */}
-
       <div className="shrink-0 border-t bg-white p-4">
-        <div className="flex gap-2">
+        {selectedFile && (
+          <AttachmentPreview
+            file={selectedFile}
+            onRemove={handleRemoveAttachment}
+          />
+        )}
+
+        {sendError && (
+          <p className="mb-2 text-sm text-red-500">{sendError}</p>
+        )}
+
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            accept={ACCEPTED_FILE_TYPES}
+            onChange={handleFileChange}
+            disabled={sending}
+          />
+
+          <button
+            type="button"
+            onClick={handleAttachClick}
+            disabled={sending}
+            title="Attach file"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-200 text-lg transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            📎
+          </button>
 
           <input
             type="text"
             value={content}
-            onChange={(event) =>
-              setContent(event.target.value)
-            }
+            onChange={(event) => setContent(event.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Type a message..."
             disabled={sending}
-            className="flex-1 rounded-lg border border-gray-200 px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-blue-500 disabled:bg-gray-100"
+            className="min-w-0 flex-1 rounded-lg border border-gray-200 px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-blue-500 disabled:bg-gray-100"
           />
 
           <button
             type="button"
             onClick={handleSendMessage}
-            disabled={
-              sending ||
-              !content.trim() ||
-              !conversationId
-            }
+            disabled={!canSend || !conversationId}
             className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {sending ? "Sending..." : "Send"}
+            {sending
+              ? selectedFile
+                ? "Uploading..."
+                : "Sending..."
+              : "Send"}
           </button>
-
         </div>
       </div>
     </div>

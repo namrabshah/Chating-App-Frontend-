@@ -15,6 +15,20 @@ api.interceptors.request.use((config) => {
     config.headers.Authorization = `Bearer ${token}`;
   }
 
+  // Let the browser set multipart boundary for FormData uploads
+  if (typeof FormData !== "undefined" && config.data instanceof FormData) {
+    const headers = config.headers as {
+      delete?: (name: string) => void;
+      set?: (name: string, value?: string) => void;
+    } & Record<string, unknown>;
+
+    if (typeof headers.delete === "function") {
+      headers.delete("Content-Type");
+    } else {
+      delete headers["Content-Type"];
+    }
+  }
+
   return config;
 });
 

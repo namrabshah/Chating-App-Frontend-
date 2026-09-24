@@ -14,14 +14,19 @@ import { User } from "@/types/auth";
 import { useAuthStore } from "@/store/auth.store";
 import { connectSocket } from "@/lib/socket";
 import { getToken } from "@/lib/auth";
+import { getLastMessagePreview } from "@/lib/file";
 
 interface NewMessagePayload {
   id: number;
   conversationId: number;
   senderId: number;
-  content: string;
+  content: string | null;
   isDelivered?: boolean;
   isRead?: boolean;
+  attachmentUrl?: string | null;
+  attachmentName?: string | null;
+  attachmentType?: string | null;
+  attachmentSize?: number | null;
   createdAt: string;
   updatedAt?: string;
 }
@@ -32,7 +37,11 @@ interface ConversationUpdatedPayload {
     id: number;
     conversationId: number;
     senderId: number;
-    content: string;
+    content: string | null;
+    attachmentUrl?: string | null;
+    attachmentName?: string | null;
+    attachmentType?: string | null;
+    attachmentSize?: number | null;
     createdAt: string;
   } | null;
   unreadCount: number;
@@ -164,6 +173,10 @@ export function ConversationList() {
               content: newMessage.content,
               senderId: newMessage.senderId,
               createdAt: newMessage.createdAt,
+              attachmentUrl: newMessage.attachmentUrl ?? null,
+              attachmentName: newMessage.attachmentName ?? null,
+              attachmentType: newMessage.attachmentType ?? null,
+              attachmentSize: newMessage.attachmentSize ?? null,
             },
             unreadCount: newUnreadCount,
             updatedAt: newMessage.createdAt,
@@ -196,6 +209,10 @@ export function ConversationList() {
                     content: newMessage.content,
                     senderId: newMessage.senderId,
                     createdAt: newMessage.createdAt,
+                    attachmentUrl: newMessage.attachmentUrl ?? null,
+                    attachmentName: newMessage.attachmentName ?? null,
+                    attachmentType: newMessage.attachmentType ?? null,
+                    attachmentSize: newMessage.attachmentSize ?? null,
                   },
                   updatedAt: newMessage.createdAt,
                 };
@@ -441,9 +458,7 @@ export function ConversationList() {
 
                     <div className="mt-1 flex items-center justify-between gap-2">
                       <p className="truncate text-xs text-gray-500">
-                        {conversation.lastMessage
-                          ? conversation.lastMessage.content
-                          : "No messages yet"}
+                        {getLastMessagePreview(conversation.lastMessage)}
                       </p>
 
                       {/* Unread Badge */}

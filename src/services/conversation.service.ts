@@ -1,12 +1,8 @@
 import api from "@/lib/axios";
 import { User } from "@/types/auth";
+import { LastMessagePreview } from "@/types/message";
 
-export interface LastMessage {
-  id: number;
-  content: string;
-  senderId: number;
-  createdAt: string;
-}
+export type LastMessage = LastMessagePreview;
 
 export interface Conversation {
   id: number;
