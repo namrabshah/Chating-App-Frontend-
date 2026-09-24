@@ -50,6 +50,11 @@ interface ReadUpdate {
   isRead: boolean;
 }
 
+interface TypingEvent {
+  userId: number;
+  conversationId: number;
+}
+
 export function ChatWindow() {
   const searchParams = useSearchParams();
   const conversationIdParam = searchParams.get("conversationId");
@@ -65,23 +70,66 @@ export function ChatWindow() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-
+  const [isOtherUserTyping, setIsOtherUserTyping] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const socketRef = useRef<ReturnType<typeof connectSocket> | null>(null);
+  const activeTypingConvIdRef = useRef<number | null>(null);
+  const currentUserRef = useRef(currentUser);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
 
   const conversationId = conversationIdParam
     ? Number(conversationIdParam)
     : null;
+
+  // Reset typing UI immediately when switching conversations (render-time adjust)
+  const [typingTrackedConversationId, setTypingTrackedConversationId] =
+    useState<number | null>(conversationId);
+
+  if (conversationId !== typingTrackedConversationId) {
+    setTypingTrackedConversationId(conversationId);
+    if (isOtherUserTyping) {
+      setIsOtherUserTyping(false);
+    }
+  }
+
+  const clearTypingTimeout = () => {
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+  };
+
+  const emitStopTyping = (targetConversationId: number | null) => {
+    if (!targetConversationId || Number.isNaN(targetConversationId)) return;
+
+    const socket = socketRef.current;
+    if (socket?.connected) {
+      socket.emit("stop_typing", targetConversationId);
+    }
+
+    if (activeTypingConvIdRef.current === targetConversationId) {
+      activeTypingConvIdRef.current = null;
+    }
+  };
 
   // ========================================
   // LOAD CONVERSATION + MESSAGES
   // ========================================
 
   useEffect(() => {
+    clearTypingTimeout();
+
+    if (activeTypingConvIdRef.current != null) {
+      emitStopTyping(activeTypingConvIdRef.current);
+    }
+
     if (!conversationId || Number.isNaN(conversationId)) {
-      setConversation(null);
-      setMessages([]);
       return;
     }
 
@@ -103,6 +151,7 @@ export function ChatWindow() {
         setSelectedFile(null);
         setContent("");
         setSendError(null);
+        setIsOtherUserTyping(false);
 
         try {
           await markConversationAsRead(conversationId);
@@ -143,6 +192,7 @@ export function ChatWindow() {
     }
 
     const socket = connectSocket(token);
+    socketRef.current = socket;
 
     const handleConnect = () => {
       console.log("SOCKET CONNECTED:", socket.id);
@@ -155,6 +205,51 @@ export function ChatWindow() {
 
     const handleDisconnect = () => {
       console.log("SOCKET DISCONNECTED");
+      setIsOtherUserTyping(false);
+      clearTypingTimeout();
+      activeTypingConvIdRef.current = null;
+    };
+
+    const handleUserTyping = (data: TypingEvent) => {
+      console.log("[RECIPIENT] USER IS TYPING", data);
+
+      if (
+        !conversationId ||
+        Number.isNaN(conversationId) ||
+        Number(data.conversationId) !== Number(conversationId)
+      ) {
+        return;
+      }
+
+      if (
+        currentUserRef.current?.id != null &&
+        Number(data.userId) === Number(currentUserRef.current.id)
+      ) {
+        return;
+      }
+
+      setIsOtherUserTyping(true);
+    };
+
+    const handleUserStopTyping = (data: TypingEvent) => {
+      console.log("[RECIPIENT] USER STOPPED TYPING", data);
+
+      if (
+        !conversationId ||
+        Number.isNaN(conversationId) ||
+        Number(data.conversationId) !== Number(conversationId)
+      ) {
+        return;
+      }
+
+      if (
+        currentUserRef.current?.id != null &&
+        Number(data.userId) === Number(currentUserRef.current.id)
+      ) {
+        return;
+      }
+
+      setIsOtherUserTyping(false);
     };
 
     const handleNewMessage = (newMessage: Message) => {
@@ -162,7 +257,7 @@ export function ChatWindow() {
         messageId: newMessage.id,
         conversationId: newMessage.conversationId,
         senderId: newMessage.senderId,
-        currentUserId: currentUser?.id,
+        currentUserId: currentUserRef.current?.id,
       });
 
       console.log("[RECIPIENT] NEW MESSAGE RECEIVED", newMessage);
@@ -187,7 +282,12 @@ export function ChatWindow() {
         return [...previousMessages, newMessage];
       });
 
-      if (Number(newMessage.senderId) !== Number(currentUser?.id)) {
+      if (
+        Number(newMessage.senderId) !== Number(currentUserRef.current?.id)
+      ) {
+        // Incoming message from the other user ends their typing indicator
+        setIsOtherUserTyping(false);
+
         console.log("DELIVERY DEBUG - SENDING ACK:", {
           messageId: newMessage.id,
           conversationId: newMessage.conversationId,
@@ -257,6 +357,8 @@ export function ChatWindow() {
     socket.on("new_message", handleNewMessage);
     socket.on("message_delivery_updated", handleDeliveryUpdate);
     socket.on("message_read_updated", handleReadUpdate);
+    socket.on("user_typing", handleUserTyping);
+    socket.on("user_stop_typing", handleUserStopTyping);
 
     if (socket.connected && conversationId && !Number.isNaN(conversationId)) {
       socket.emit("join_conversation", { conversationId });
@@ -265,13 +367,27 @@ export function ChatWindow() {
     }
 
     return () => {
+      if (activeTypingConvIdRef.current != null && socket.connected) {
+        socket.emit("stop_typing", activeTypingConvIdRef.current);
+        activeTypingConvIdRef.current = null;
+      }
+
+      if (conversationId && !Number.isNaN(conversationId)) {
+        socket.emit("leave_conversation", { conversationId });
+      }
+
       socket.off("connect", handleConnect);
       socket.off("disconnect", handleDisconnect);
       socket.off("new_message", handleNewMessage);
       socket.off("message_delivery_updated", handleDeliveryUpdate);
       socket.off("message_read_updated", handleReadUpdate);
+      socket.off("user_typing", handleUserTyping);
+      socket.off("user_stop_typing", handleUserStopTyping);
+
+      setIsOtherUserTyping(false);
+      clearTypingTimeout();
     };
-  }, [conversationId, currentUser?.id]);
+  }, [conversationId]);
 
   // ========================================
   // AUTO SCROLL TO LATEST MESSAGE
@@ -317,6 +433,39 @@ export function ChatWindow() {
   };
 
   // ========================================
+  // INPUT ONCHANGE & TYPING LOGIC
+  // ========================================
+
+  const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const newContent = event.target.value;
+    setContent(newContent);
+
+    if (!conversationId || Number.isNaN(conversationId)) return;
+
+    // Reuse the existing connected socket — never create a new connection per keystroke
+    const socket = socketRef.current;
+    if (!socket || !socket.connected) return;
+
+    clearTypingTimeout();
+
+    if (newContent.trim().length > 0) {
+      activeTypingConvIdRef.current = conversationId;
+      socket.emit("typing", conversationId);
+
+      typingTimeoutRef.current = setTimeout(() => {
+        if (socketRef.current?.connected) {
+          socketRef.current.emit("stop_typing", conversationId);
+        }
+        typingTimeoutRef.current = null;
+        activeTypingConvIdRef.current = null;
+      }, 1000);
+    } else {
+      socket.emit("stop_typing", conversationId);
+      activeTypingConvIdRef.current = null;
+    }
+  };
+
+  // ========================================
   // SEND MESSAGE
   // ========================================
 
@@ -326,6 +475,9 @@ export function ChatWindow() {
     if (!text && !selectedFile) return;
     if (!conversationId || Number.isNaN(conversationId)) return;
     if (sending) return;
+
+    emitStopTyping(conversationId);
+    clearTypingTimeout();
 
     if (selectedFile) {
       const validationError = validateAttachmentFile(selectedFile);
@@ -370,6 +522,7 @@ export function ChatWindow() {
 
       setContent("");
       setSelectedFile(null);
+      setIsOtherUserTyping(false);
     } catch (error) {
       console.error("MESSAGE API ERROR:", error);
 
@@ -515,7 +668,13 @@ export function ChatWindow() {
           </h2>
 
           <p className="text-xs text-gray-500">
-            {otherUser.isOnline ? "Online" : "Offline"}
+            {isOtherUserTyping ? (
+              <span className="text-blue-500">typing...</span>
+            ) : otherUser.isOnline ? (
+              "Online"
+            ) : (
+              "Offline"
+            )}
           </p>
         </div>
       </div>
@@ -616,7 +775,7 @@ export function ChatWindow() {
           <input
             type="text"
             value={content}
-            onChange={(event) => setContent(event.target.value)}
+            onChange={handleInputChange}
             onKeyDown={handleKeyDown}
             placeholder="Type a message..."
             disabled={sending}
