@@ -10,6 +10,7 @@ import {
   sendMessage,
   markConversationAsRead,
   Message,
+  ReplyToMessagePreview,
 } from "@/services/message.services";
 
 import { useAuthStore } from "@/store/auth.store";
@@ -18,6 +19,7 @@ import { getToken } from "@/lib/auth";
 import {
   ACCEPTED_FILE_TYPES,
   validateAttachmentFile,
+  isDocumentType,
 } from "@/lib/file";
 import { AttachmentPreview } from "@/components/chat/AttachmentPreview";
 import { AttachmentMessage } from "@/components/chat/AttachmentMessage";
@@ -55,6 +57,37 @@ interface TypingEvent {
   conversationId: number;
 }
 
+function getReplyPreviewLabel(
+  msg: Message | ReplyToMessagePreview | null
+): string {
+  if (!msg) return "Message deleted";
+  const content = msg.content?.trim();
+  if (content) return content;
+
+  const type = msg.attachmentType || "";
+  const name = msg.attachmentName || "file";
+
+  if (type.startsWith("image/")) return "📷 Image";
+  if (type.startsWith("audio/")) return `🎵 ${name}`;
+  if (type.startsWith("video/")) return `🎥 ${name}`;
+  if (type === "application/pdf" || isDocumentType(type)) return `📄 ${name}`;
+  if (msg.attachmentName || msg.attachmentType || msg.attachmentUrl)
+    return `📎 ${name}`;
+
+  return "Message";
+}
+
+function getSenderName(
+  senderId: number,
+  currentUserId?: number | null,
+  otherUserName?: string
+): string {
+  if (currentUserId && Number(senderId) === Number(currentUserId)) {
+    return "You";
+  }
+  return otherUserName || "User";
+}
+
 export function ChatWindow() {
   const searchParams = useSearchParams();
   const conversationIdParam = searchParams.get("conversationId");
@@ -71,6 +104,8 @@ export function ChatWindow() {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [isOtherUserTyping, setIsOtherUserTyping] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -118,12 +153,24 @@ export function ChatWindow() {
     }
   };
 
+  const handleScrollToMessage = (targetId: number) => {
+    const element = document.getElementById(`message-${targetId}`);
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlightedMessageId(targetId);
+      setTimeout(() => {
+        setHighlightedMessageId((prev) => (prev === targetId ? null : prev));
+      }, 1500);
+    }
+  };
+
   // ========================================
   // LOAD CONVERSATION + MESSAGES
   // ========================================
 
   useEffect(() => {
     clearTypingTimeout();
+    setReplyingTo(null);
 
     if (activeTypingConvIdRef.current != null) {
       emitStopTyping(activeTypingConvIdRef.current);
@@ -492,12 +539,13 @@ export function ChatWindow() {
       setSendError(null);
 
       console.log("1. SEND CLICKED");
-      console.log("2. CALLING MESSAGE API");
+      console.log("2. CALLING MESSAGE API WITH REPLY ID:", replyingTo?.id);
 
       const response = await sendMessage(
         conversationId,
         text || undefined,
-        selectedFile
+        selectedFile,
+        replyingTo?.id
       );
 
       console.log("3. MESSAGE API RESPONSE:", response);
@@ -522,6 +570,7 @@ export function ChatWindow() {
 
       setContent("");
       setSelectedFile(null);
+      setReplyingTo(null);
       setIsOtherUserTyping(false);
     } catch (error) {
       console.error("MESSAGE API ERROR:", error);
@@ -690,14 +739,30 @@ export function ChatWindow() {
             {messages.map((message) => {
               const isMine =
                 Number(message.senderId) !== Number(otherUser.id);
+              const isHighlighted = highlightedMessageId === message.id;
 
               return (
                 <div
+                  id={`message-${message.id}`}
                   key={message.id}
-                  className={`flex w-full ${
-                    isMine ? "justify-end" : "justify-start"
-                  }`}
+                  className={`group flex w-full items-center gap-1.5 rounded-lg transition-colors duration-500 ${
+                    isHighlighted
+                      ? "bg-amber-100/80 p-1 ring-2 ring-amber-400"
+                      : ""
+                  } ${isMine ? "justify-end" : "justify-start"}`}
                 >
+                  {isMine && (
+                    <button
+                      type="button"
+                      onClick={() => setReplyingTo(message)}
+                      className="opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0 rounded p-1 text-xs text-gray-400 hover:text-blue-600 transition"
+                      aria-label="Reply to message"
+                      title="Reply"
+                    >
+                      ↩
+                    </button>
+                  )}
+
                   <div
                     className={`max-w-[min(70%,24rem)] overflow-hidden rounded-2xl px-3 py-2 sm:px-4 ${
                       isMine
@@ -705,6 +770,32 @@ export function ChatWindow() {
                         : "rounded-bl-md bg-gray-100 text-gray-800"
                     }`}
                   >
+                    {message.replyToMessage && (
+                      <div
+                        onClick={() =>
+                          handleScrollToMessage(message.replyToMessage!.id)
+                        }
+                        className={`mb-1.5 cursor-pointer rounded-lg border-l-4 px-2.5 py-1 text-xs transition ${
+                          isMine
+                            ? "border-white/80 bg-blue-700/70 text-white hover:bg-blue-700"
+                            : "border-blue-500 bg-gray-200/80 text-gray-800 hover:bg-gray-200"
+                        }`}
+                        title="Click to view original message"
+                      >
+                        <div className="font-semibold opacity-90">
+                          {message.replyToMessage.senderName ||
+                            getSenderName(
+                              message.replyToMessage.senderId,
+                              currentUser?.id,
+                              otherUser.name
+                            )}
+                        </div>
+                        <div className="truncate opacity-80">
+                          {getReplyPreviewLabel(message.replyToMessage)}
+                        </div>
+                      </div>
+                    )}
+
                     {message.attachmentUrl && (
                       <AttachmentMessage
                         message={message}
@@ -731,6 +822,18 @@ export function ChatWindow() {
                       {renderMessageStatus(message, isMine)}
                     </div>
                   </div>
+
+                  {!isMine && (
+                    <button
+                      type="button"
+                      onClick={() => setReplyingTo(message)}
+                      className="opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0 rounded p-1 text-xs text-gray-400 hover:text-blue-600 transition"
+                      aria-label="Reply to message"
+                      title="Reply"
+                    >
+                      ↩
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -741,6 +844,35 @@ export function ChatWindow() {
 
       {/* MESSAGE INPUT */}
       <div className="shrink-0 border-t bg-white p-4">
+        {replyingTo && (
+          <div className="mb-3 flex items-center justify-between rounded-lg border-l-4 border-blue-600 bg-blue-50 px-3 py-2 text-xs transition">
+            <div className="min-w-0 flex-1 pr-2">
+              <div className="flex items-center gap-1.5 font-semibold text-blue-700">
+                <span>↩ Replying to</span>
+                <span>
+                  {getSenderName(
+                    replyingTo.senderId,
+                    currentUser?.id,
+                    otherUser.name
+                  )}
+                </span>
+              </div>
+              <p className="truncate text-gray-600">
+                {getReplyPreviewLabel(replyingTo)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReplyingTo(null)}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-blue-100 hover:text-gray-700 transition"
+              aria-label="Cancel reply"
+              title="Cancel reply"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {selectedFile && (
           <AttachmentPreview
             file={selectedFile}

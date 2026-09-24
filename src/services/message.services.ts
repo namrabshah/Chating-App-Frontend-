@@ -1,7 +1,7 @@
 import api from "@/lib/axios";
-import { Message } from "@/types/message";
+import { Message, ReplyToMessagePreview } from "@/types/message";
 
-export type { Message };
+export type { Message, ReplyToMessagePreview };
 
 export interface GetMessagesResponse {
   success: boolean;
@@ -28,7 +28,8 @@ export const getMessages = async (
 export const sendMessage = async (
   conversationId: number,
   content?: string,
-  file?: File | null
+  file?: File | null,
+  replyToMessageId?: number | null
 ): Promise<SendMessageResponse> => {
   const formData = new FormData();
 
@@ -38,6 +39,10 @@ export const sendMessage = async (
 
   if (file) {
     formData.append("file", file);
+  }
+
+  if (replyToMessageId) {
+    formData.append("replyToMessageId", String(replyToMessageId));
   }
 
   console.log(

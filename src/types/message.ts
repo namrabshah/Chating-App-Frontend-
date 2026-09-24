@@ -1,3 +1,13 @@
+export interface ReplyToMessagePreview {
+  id: number;
+  senderId: number;
+  senderName?: string | null;
+  content?: string | null;
+  attachmentUrl?: string | null;
+  attachmentName?: string | null;
+  attachmentType?: string | null;
+}
+
 export interface Message {
   id: number;
   conversationId: number;
@@ -9,6 +19,8 @@ export interface Message {
   attachmentName?: string | null;
   attachmentType?: string | null;
   attachmentSize?: number | null;
+  replyToMessageId?: number | null;
+  replyToMessage?: ReplyToMessagePreview | null;
   createdAt: string;
   updatedAt?: string;
 }
