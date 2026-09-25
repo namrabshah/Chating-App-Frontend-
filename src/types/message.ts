@@ -21,6 +21,8 @@ export interface Message {
   attachmentSize?: number | null;
   replyToMessageId?: number | null;
   replyToMessage?: ReplyToMessagePreview | null;
+  isEdited?: boolean;
+  editedAt?: string | null;
   createdAt: string;
   updatedAt?: string;
 }

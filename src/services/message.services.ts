@@ -84,3 +84,15 @@ export const markMessageAsRead = async (
 
   return response.data;
 };
+
+export const editMessage = async (
+  messageId: number,
+  content: string
+): Promise<SendMessageResponse> => {
+  const response = await api.patch<SendMessageResponse>(
+    `/messages/${messageId}`,
+    { content }
+  );
+
+  return response.data;
+};

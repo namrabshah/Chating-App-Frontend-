@@ -8,6 +8,7 @@ import { getConversationDetails } from "@/services/conversation.service";
 import {
   getMessages,
   sendMessage,
+  editMessage,
   markConversationAsRead,
   Message,
   ReplyToMessagePreview,
@@ -105,7 +106,11 @@ export function ChatWindow() {
   const [sendError, setSendError] = useState<string | null>(null);
   const [isOtherUserTyping, setIsOtherUserTyping] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
-  const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
+  const [editingOriginalMessage, setEditingOriginalMessage] =
+    useState<Message | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] =
+    useState<number | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -164,6 +169,21 @@ export function ChatWindow() {
     }
   };
 
+  const handleStartEditMessage = (message: Message) => {
+    setReplyingTo(null);
+    setEditingMessageId(message.id);
+    setEditingOriginalMessage(message);
+    setContent(message.content || "");
+    setSendError(null);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingMessageId(null);
+    setEditingOriginalMessage(null);
+    setContent("");
+    setSendError(null);
+  };
+
   // ========================================
   // LOAD CONVERSATION + MESSAGES
   // ========================================
@@ -171,6 +191,8 @@ export function ChatWindow() {
   useEffect(() => {
     clearTypingTimeout();
     setReplyingTo(null);
+    setEditingMessageId(null);
+    setEditingOriginalMessage(null);
 
     if (activeTypingConvIdRef.current != null) {
       emitStopTyping(activeTypingConvIdRef.current);
@@ -359,6 +381,44 @@ export function ChatWindow() {
       }
     };
 
+    const handleMessageUpdated = (payload: { message?: Message } | Message) => {
+      console.log("[SOCKET] MESSAGE UPDATED RECEIVED:", payload);
+
+      const updatedMessage =
+        "message" in payload && payload.message
+          ? payload.message
+          : (payload as Message);
+
+      if (
+        !conversationId ||
+        Number.isNaN(conversationId) ||
+        Number(updatedMessage.conversationId) !== Number(conversationId)
+      ) {
+        return;
+      }
+
+      setMessages((previousMessages) =>
+        previousMessages.map((msg) => {
+          if (Number(msg.id) === Number(updatedMessage.id)) {
+            return {
+              ...msg,
+              ...updatedMessage,
+            };
+          }
+          if (msg.replyToMessage?.id === updatedMessage.id) {
+            return {
+              ...msg,
+              replyToMessage: {
+                ...msg.replyToMessage,
+                content: updatedMessage.content,
+              },
+            };
+          }
+          return msg;
+        })
+      );
+    };
+
     const handleDeliveryUpdate = (data: DeliveryUpdate) => {
       console.log("DELIVERY DEBUG - UPDATE RECEIVED BY SENDER:", data);
 
@@ -402,6 +462,7 @@ export function ChatWindow() {
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
     socket.on("new_message", handleNewMessage);
+    socket.on("message_updated", handleMessageUpdated);
     socket.on("message_delivery_updated", handleDeliveryUpdate);
     socket.on("message_read_updated", handleReadUpdate);
     socket.on("user_typing", handleUserTyping);
@@ -426,6 +487,7 @@ export function ChatWindow() {
       socket.off("connect", handleConnect);
       socket.off("disconnect", handleDisconnect);
       socket.off("new_message", handleNewMessage);
+      socket.off("message_updated", handleMessageUpdated);
       socket.off("message_delivery_updated", handleDeliveryUpdate);
       socket.off("message_read_updated", handleReadUpdate);
       socket.off("user_typing", handleUserTyping);
@@ -454,7 +516,7 @@ export function ChatWindow() {
   // ========================================
 
   const handleAttachClick = () => {
-    if (sending) return;
+    if (sending || Boolean(editingMessageId)) return;
     fileInputRef.current?.click();
   };
 
@@ -513,18 +575,87 @@ export function ChatWindow() {
   };
 
   // ========================================
-  // SEND MESSAGE
+  // SEND / SAVE MESSAGE
   // ========================================
 
   const handleSendMessage = async () => {
     const text = content.trim();
 
-    if (!text && !selectedFile) return;
     if (!conversationId || Number.isNaN(conversationId)) return;
     if (sending) return;
 
     emitStopTyping(conversationId);
     clearTypingTimeout();
+
+    // EDIT MODE
+    if (editingMessageId) {
+      if (!text) {
+        setSendError("Message content cannot be empty");
+        return;
+      }
+
+      try {
+        setSending(true);
+        setSendError(null);
+
+        console.log("CALLING EDIT MESSAGE API:", editingMessageId, text);
+
+        const response = await editMessage(editingMessageId, text);
+
+        if (!response?.success || !response?.message) {
+          throw new Error("Edit message API returned invalid response");
+        }
+
+        const updatedMessage = response.message;
+
+        setMessages((previousMessages) =>
+          previousMessages.map((msg) => {
+            if (Number(msg.id) === Number(updatedMessage.id)) {
+              return {
+                ...msg,
+                ...updatedMessage,
+              };
+            }
+            if (msg.replyToMessage?.id === updatedMessage.id) {
+              return {
+                ...msg,
+                replyToMessage: {
+                  ...msg.replyToMessage,
+                  content: updatedMessage.content,
+                },
+              };
+            }
+            return msg;
+          })
+        );
+
+        setContent("");
+        setEditingMessageId(null);
+        setEditingOriginalMessage(null);
+      } catch (error) {
+        console.error("EDIT MESSAGE API ERROR:", error);
+
+        let message = "Failed to edit message. Please try again.";
+
+        if (axios.isAxiosError(error)) {
+          const apiMessage = error.response?.data?.message;
+          if (typeof apiMessage === "string" && apiMessage.trim()) {
+            message = apiMessage;
+          }
+        } else if (error instanceof Error && error.message) {
+          message = error.message;
+        }
+
+        setSendError(message);
+      } finally {
+        setSending(false);
+      }
+
+      return;
+    }
+
+    // NORMAL SEND MESSAGE MODE
+    if (!text && !selectedFile) return;
 
     if (selectedFile) {
       const validationError = validateAttachmentFile(selectedFile);
@@ -595,10 +726,19 @@ export function ChatWindow() {
   };
 
   // ========================================
-  // ENTER TO SEND
+  // KEYBOARD HANDLER
   // ========================================
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      if (editingMessageId) {
+        handleCancelEdit();
+      } else if (replyingTo) {
+        setReplyingTo(null);
+      }
+      return;
+    }
+
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       handleSendMessage();
@@ -689,7 +829,10 @@ export function ChatWindow() {
   }
 
   const otherUser = conversation.otherUser;
-  const canSend = Boolean(content.trim() || selectedFile) && !sending;
+  const canSend =
+    editingMessageId
+      ? Boolean(content.trim()) && !sending
+      : Boolean(content.trim() || selectedFile) && !sending;
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col bg-white">
@@ -752,15 +895,28 @@ export function ChatWindow() {
                   } ${isMine ? "justify-end" : "justify-start"}`}
                 >
                   {isMine && (
-                    <button
-                      type="button"
-                      onClick={() => setReplyingTo(message)}
-                      className="opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0 rounded p-1 text-xs text-gray-400 hover:text-blue-600 transition"
-                      aria-label="Reply to message"
-                      title="Reply"
-                    >
-                      ↩
-                    </button>
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition shrink-0">
+                      {Boolean(message.content) && (
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditMessage(message)}
+                          className="rounded p-1 text-xs text-gray-400 hover:text-amber-600 transition"
+                          aria-label="Edit message"
+                          title="Edit message"
+                        >
+                          ✏️
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setReplyingTo(message)}
+                        className="rounded p-1 text-xs text-gray-400 hover:text-blue-600 transition"
+                        aria-label="Reply to message"
+                        title="Reply"
+                      >
+                        ↩
+                      </button>
+                    </div>
                   )}
 
                   <div
@@ -819,6 +975,26 @@ export function ChatWindow() {
                         })}
                       </span>
 
+                      {message.isEdited && (
+                        <span
+                          className={`ml-1 font-normal italic ${
+                            isMine ? "text-blue-200" : "text-gray-400"
+                          }`}
+                          title={
+                            message.editedAt
+                              ? `Edited ${new Date(
+                                  message.editedAt
+                                ).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}`
+                              : "Edited"
+                          }
+                        >
+                          · edited
+                        </span>
+                      )}
+
                       {renderMessageStatus(message, isMine)}
                     </div>
                   </div>
@@ -842,9 +1018,32 @@ export function ChatWindow() {
         )}
       </div>
 
-      {/* MESSAGE INPUT */}
+      {/* MESSAGE INPUT / COMPOSER AREA */}
       <div className="shrink-0 border-t bg-white p-4">
-        {replyingTo && (
+        {editingOriginalMessage && (
+          <div className="mb-3 flex items-center justify-between rounded-lg border-l-4 border-amber-500 bg-amber-50 px-3 py-2 text-xs transition">
+            <div className="min-w-0 flex-1 pr-2">
+              <div className="flex items-center gap-1.5 font-semibold text-amber-800">
+                <span>✏️ Editing message</span>
+              </div>
+              <p className="truncate text-gray-600">
+                {editingOriginalMessage.content ||
+                  getReplyPreviewLabel(editingOriginalMessage)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleCancelEdit}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-amber-100 hover:text-gray-700 transition"
+              aria-label="Cancel edit"
+              title="Cancel edit"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {replyingTo && !editingMessageId && (
           <div className="mb-3 flex items-center justify-between rounded-lg border-l-4 border-blue-600 bg-blue-50 px-3 py-2 text-xs transition">
             <div className="min-w-0 flex-1 pr-2">
               <div className="flex items-center gap-1.5 font-semibold text-blue-700">
@@ -873,7 +1072,7 @@ export function ChatWindow() {
           </div>
         )}
 
-        {selectedFile && (
+        {selectedFile && !editingMessageId && (
           <AttachmentPreview
             file={selectedFile}
             onRemove={handleRemoveAttachment}
@@ -891,14 +1090,14 @@ export function ChatWindow() {
             className="hidden"
             accept={ACCEPTED_FILE_TYPES}
             onChange={handleFileChange}
-            disabled={sending}
+            disabled={sending || Boolean(editingMessageId)}
           />
 
           <button
             type="button"
             onClick={handleAttachClick}
-            disabled={sending}
-            title="Attach file"
+            disabled={sending || Boolean(editingMessageId)}
+            title={editingMessageId ? "Attachments disabled while editing" : "Attach file"}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-200 text-lg transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             📎
@@ -909,7 +1108,7 @@ export function ChatWindow() {
             value={content}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message..."
+            placeholder={editingMessageId ? "Edit your message..." : "Type a message..."}
             disabled={sending}
             className="min-w-0 flex-1 rounded-lg border border-gray-200 px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-blue-500 disabled:bg-gray-100"
           />
@@ -918,12 +1117,17 @@ export function ChatWindow() {
             type="button"
             onClick={handleSendMessage}
             disabled={!canSend || !conversationId}
+            aria-label={editingMessageId ? "Save edited message" : "Send message"}
             className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {sending
-              ? selectedFile
+              ? editingMessageId
+                ? "Saving..."
+                : selectedFile
                 ? "Uploading..."
                 : "Sending..."
+              : editingMessageId
+              ? "Save"
               : "Send"}
           </button>
         </div>
