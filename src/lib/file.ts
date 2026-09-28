@@ -120,8 +120,13 @@ export function getLastMessagePreview(message: {
   content?: string | null;
   attachmentName?: string | null;
   attachmentType?: string | null;
+  isDeleted?: boolean;
 } | null): string {
   if (!message) return "No messages yet";
+
+  if (message.isDeleted || message.content === "This message was deleted") {
+    return "This message was deleted";
+  }
 
   const content = message.content?.trim();
   if (content) return content;

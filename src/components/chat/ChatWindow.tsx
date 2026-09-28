@@ -9,6 +9,7 @@ import {
   getMessages,
   sendMessage,
   editMessage,
+  deleteMessage,
   markConversationAsRead,
   Message,
   ReplyToMessagePreview,
@@ -62,6 +63,9 @@ function getReplyPreviewLabel(
   msg: Message | ReplyToMessagePreview | null
 ): string {
   if (!msg) return "Message deleted";
+  if (msg.content === "Message deleted" || msg.content === "This message was deleted" || msg.isDeleted) {
+    return "Message deleted";
+  }
   const content = msg.content?.trim();
   if (content) return content;
 
@@ -111,6 +115,8 @@ export function ChatWindow() {
     useState<Message | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] =
     useState<number | null>(null);
+  const [messageMenuId, setMessageMenuId] = useState<number | null>(null);
+  const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<number | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -182,6 +188,60 @@ export function ChatWindow() {
     setEditingOriginalMessage(null);
     setContent("");
     setSendError(null);
+  };
+
+  const handleDeleteMessage = async (
+    message: Message,
+    deleteType: "me" | "everyone"
+  ) => {
+    try {
+      setSendError(null);
+      const response = await deleteMessage(message.id, deleteType);
+
+      if (!response?.success) {
+        throw new Error("Delete message request failed");
+      }
+
+      if (deleteType === "me") {
+        setMessages((previousMessages) =>
+          previousMessages.filter(
+            (item) => Number(item.id) !== Number(message.id)
+          )
+        );
+      } else {
+        setMessages((previousMessages) =>
+          previousMessages.map((item) =>
+            Number(item.id) === Number(message.id)
+              ? {
+                  ...item,
+                  isDeleted: true,
+                  deletedAt: new Date().toISOString(),
+                  content: null,
+                  attachmentUrl: null,
+                  attachmentName: null,
+                  attachmentType: null,
+                  attachmentSize: null,
+                }
+              : item
+          )
+        );
+      }
+
+      setMessageMenuId(null);
+      setDeleteConfirmMessageId(null);
+    } catch (error) {
+      console.error("DELETE MESSAGE API ERROR:", error);
+      let messageText = "Failed to delete message. Please try again.";
+
+      if (axios.isAxiosError(error)) {
+        const apiMessage = error.response?.data?.message;
+        if (typeof apiMessage === "string" && apiMessage.trim()) {
+          messageText = apiMessage;
+        }
+      }
+
+      setSendError(messageText);
+    }
   };
 
   // ========================================
@@ -419,6 +479,43 @@ export function ChatWindow() {
       );
     };
 
+    const handleMessageDeleted = (data: {
+      messageId: number;
+      conversationId: number;
+      deleteType?: string;
+      message?: Message;
+    }) => {
+      if (
+        !conversationId ||
+        Number.isNaN(conversationId) ||
+        Number(data.conversationId) !== Number(conversationId)
+      ) {
+        return;
+      }
+
+      setMessages((previousMessages) =>
+        previousMessages.map((message) => {
+          if (Number(message.id) !== Number(data.messageId)) {
+            return message;
+          }
+
+          const nextMessage = {
+            ...message,
+            ...(data.message ?? {}),
+            isDeleted: true,
+            deletedAt: data.message?.deletedAt ?? new Date().toISOString(),
+            content: null,
+            attachmentUrl: null,
+            attachmentName: null,
+            attachmentType: null,
+            attachmentSize: null,
+          };
+
+          return nextMessage;
+        })
+      );
+    };
+
     const handleDeliveryUpdate = (data: DeliveryUpdate) => {
       console.log("DELIVERY DEBUG - UPDATE RECEIVED BY SENDER:", data);
 
@@ -463,6 +560,7 @@ export function ChatWindow() {
     socket.on("disconnect", handleDisconnect);
     socket.on("new_message", handleNewMessage);
     socket.on("message_updated", handleMessageUpdated);
+    socket.on("message_deleted", handleMessageDeleted);
     socket.on("message_delivery_updated", handleDeliveryUpdate);
     socket.on("message_read_updated", handleReadUpdate);
     socket.on("user_typing", handleUserTyping);
@@ -488,6 +586,7 @@ export function ChatWindow() {
       socket.off("disconnect", handleDisconnect);
       socket.off("new_message", handleNewMessage);
       socket.off("message_updated", handleMessageUpdated);
+      socket.off("message_deleted", handleMessageDeleted);
       socket.off("message_delivery_updated", handleDeliveryUpdate);
       socket.off("message_read_updated", handleReadUpdate);
       socket.off("user_typing", handleUserTyping);
@@ -883,20 +982,21 @@ export function ChatWindow() {
               const isMine =
                 Number(message.senderId) !== Number(otherUser.id);
               const isHighlighted = highlightedMessageId === message.id;
+              const isDeletedMessage = Boolean(message.isDeleted);
 
               return (
                 <div
                   id={`message-${message.id}`}
                   key={message.id}
-                  className={`group flex w-full items-center gap-1.5 rounded-lg transition-colors duration-500 ${
+                  className={`group relative flex w-full items-center gap-1.5 rounded-lg transition-colors duration-500 ${
                     isHighlighted
                       ? "bg-amber-100/80 p-1 ring-2 ring-amber-400"
                       : ""
                   } ${isMine ? "justify-end" : "justify-start"}`}
                 >
-                  {isMine && (
-                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition shrink-0">
-                      {Boolean(message.content) && (
+                  {!isDeletedMessage && isMine && (
+                    <div className="relative flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition shrink-0">
+                      {!message.isDeleted && Boolean(message.content) && (
                         <button
                           type="button"
                           onClick={() => handleStartEditMessage(message)}
@@ -916,12 +1016,23 @@ export function ChatWindow() {
                       >
                         ↩
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setMessageMenuId(message.id)}
+                        className="rounded p-1 text-xs text-gray-400 hover:text-gray-700 transition"
+                        aria-label="Message options"
+                        title="Message options"
+                      >
+                        ⋯
+                      </button>
                     </div>
                   )}
 
                   <div
                     className={`max-w-[min(70%,24rem)] overflow-hidden rounded-2xl px-3 py-2 sm:px-4 ${
-                      isMine
+                      isDeletedMessage
+                        ? "rounded-md border border-gray-200 bg-gray-100 text-gray-500 italic"
+                        : isMine
                         ? "rounded-br-md bg-blue-600 text-white"
                         : "rounded-bl-md bg-gray-100 text-gray-800"
                     }`}
@@ -932,7 +1043,9 @@ export function ChatWindow() {
                           handleScrollToMessage(message.replyToMessage!.id)
                         }
                         className={`mb-1.5 cursor-pointer rounded-lg border-l-4 px-2.5 py-1 text-xs transition ${
-                          isMine
+                          isDeletedMessage
+                            ? "border-gray-300 bg-gray-200 text-gray-600"
+                            : isMine
                             ? "border-white/80 bg-blue-700/70 text-white hover:bg-blue-700"
                             : "border-blue-500 bg-gray-200/80 text-gray-800 hover:bg-gray-200"
                         }`}
@@ -952,54 +1065,58 @@ export function ChatWindow() {
                       </div>
                     )}
 
-                    {message.attachmentUrl && (
+                    {!isDeletedMessage && message.attachmentUrl && (
                       <AttachmentMessage
                         message={message}
                         isMine={isMine}
                       />
                     )}
 
-                    {message.content ? (
+                    {isDeletedMessage ? (
+                      <p className="break-words text-sm">This message was deleted</p>
+                    ) : message.content ? (
                       <p className="break-words text-sm">{message.content}</p>
                     ) : null}
 
-                    <div
-                      className={`mt-1 flex items-center justify-end text-[10px] ${
-                        isMine ? "text-blue-100" : "text-gray-400"
-                      }`}
-                    >
-                      <span>
-                        {new Date(message.createdAt).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </span>
-
-                      {message.isEdited && (
-                        <span
-                          className={`ml-1 font-normal italic ${
-                            isMine ? "text-blue-200" : "text-gray-400"
-                          }`}
-                          title={
-                            message.editedAt
-                              ? `Edited ${new Date(
-                                  message.editedAt
-                                ).toLocaleTimeString([], {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })}`
-                              : "Edited"
-                          }
-                        >
-                          · edited
+                    {!isDeletedMessage && (
+                      <div
+                        className={`mt-1 flex items-center justify-end text-[10px] ${
+                          isMine ? "text-blue-100" : "text-gray-400"
+                        }`}
+                      >
+                        <span>
+                          {new Date(message.createdAt).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
                         </span>
-                      )}
 
-                      {renderMessageStatus(message, isMine)}
-                    </div>
+                        {message.isEdited && (
+                          <span
+                            className={`ml-1 font-normal italic ${
+                              isMine ? "text-blue-200" : "text-gray-400"
+                            }`}
+                            title={
+                              message.editedAt
+                                ? `Edited ${new Date(
+                                    message.editedAt
+                                  ).toLocaleTimeString([], {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })}`
+                                : "Edited"
+                            }
+                          >
+                            · edited
+                          </span>
+                        )}
+
+                        {renderMessageStatus(message, isMine)}
+                      </div>
+                    )}
                   </div>
 
-                  {!isMine && (
+                  {!isMine && !isDeletedMessage && (
                     <button
                       type="button"
                       onClick={() => setReplyingTo(message)}
@@ -1009,6 +1126,117 @@ export function ChatWindow() {
                     >
                       ↩
                     </button>
+                  )}
+
+                  {messageMenuId === message.id && !isDeletedMessage && (
+                    <div className="absolute right-0 top-0 z-20 mt-2 w-44 rounded-xl border border-gray-200 bg-white p-2 shadow-lg">
+                      {!isMine ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReplyingTo(message);
+                              setMessageMenuId(null);
+                            }}
+                            className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
+                            aria-label="Reply to message"
+                          >
+                            Reply
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeleteConfirmMessageId(message.id);
+                              setMessageMenuId(null);
+                            }}
+                            className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
+                            aria-label="Delete for me"
+                          >
+                            Delete for Me
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReplyingTo(message);
+                              setMessageMenuId(null);
+                            }}
+                            className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
+                            aria-label="Reply to message"
+                          >
+                            Reply
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeleteConfirmMessageId(message.id);
+                              setMessageMenuId(null);
+                            }}
+                            className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
+                            aria-label="Delete message"
+                          >
+                            Delete
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleStartEditMessage(message);
+                              setMessageMenuId(null);
+                            }}
+                            className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
+                            aria-label="Edit message"
+                          >
+                            Edit
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {deleteConfirmMessageId === message.id && !isDeletedMessage && (
+                    <div className="absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-black/10 backdrop-blur-[1px]">
+                      <div className="w-64 rounded-xl border border-gray-200 bg-white p-4 shadow-lg">
+                        <p className="text-sm font-medium text-gray-800">
+                          {isMine
+                            ? "Delete message?"
+                            : "Delete this message for you?"}
+                        </p>
+                        <div className="mt-3 space-y-2">
+                          <button
+                            type="button"
+                            onClick={() => setDeleteConfirmMessageId(null)}
+                            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                            aria-label="Cancel"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleDeleteMessage(message, "me");
+                            }}
+                            className="w-full rounded-lg bg-gray-800 px-3 py-2 text-sm font-medium text-white hover:bg-gray-900"
+                            aria-label="Delete for me"
+                          >
+                            Delete for Me
+                          </button>
+                          {isMine && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void handleDeleteMessage(message, "everyone");
+                              }}
+                              className="w-full rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700"
+                              aria-label="Delete for everyone"
+                            >
+                              Delete for Everyone
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   )}
                 </div>
               );

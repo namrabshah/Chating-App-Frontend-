@@ -96,3 +96,24 @@ export const editMessage = async (
 
   return response.data;
 };
+
+export const deleteMessage = async (
+  messageId: number,
+  deleteType: "me" | "everyone"
+): Promise<{
+  success: boolean;
+  deleteType: "me" | "everyone";
+  messageId?: number;
+  message?: Message;
+}> => {
+  const response = await api.delete<{
+    success: boolean;
+    deleteType: "me" | "everyone";
+    messageId?: number;
+    message?: Message;
+  }>(`/messages/${messageId}`, {
+    data: { deleteType },
+  });
+
+  return response.data;
+};

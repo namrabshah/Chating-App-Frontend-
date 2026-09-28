@@ -283,14 +283,54 @@ export function ConversationList() {
       );
     };
 
+    const handleMessageDeleted = (data: {
+      messageId: number;
+      conversationId: number;
+      deleteType?: string;
+    }) => {
+      const convId = Number(data.conversationId);
+      if (!convId || Number.isNaN(convId)) return;
+
+      setConversations((prevList) =>
+        prevList.map((conv) => {
+          if (conv.id !== convId || !conv.lastMessage) {
+            return conv;
+          }
+
+          const isTargetMessage =
+            Number(conv.lastMessage.id) === Number(data.messageId);
+
+          if (!isTargetMessage) {
+            return conv;
+          }
+
+          return {
+            ...conv,
+            lastMessage: {
+              ...conv.lastMessage,
+              content: "This message was deleted",
+              attachmentUrl: null,
+              attachmentName: null,
+              attachmentType: null,
+              attachmentSize: null,
+              isDeleted: true,
+            },
+            updatedAt: new Date().toISOString(),
+          };
+        })
+      );
+    };
+
     socket.on("new_message", handleNewMessage);
     socket.on("conversation_updated", handleConversationUpdated);
     socket.on("unread_count_updated", handleUnreadCountUpdated);
+    socket.on("message_deleted", handleMessageDeleted);
 
     return () => {
       socket.off("new_message", handleNewMessage);
       socket.off("conversation_updated", handleConversationUpdated);
       socket.off("unread_count_updated", handleUnreadCountUpdated);
+      socket.off("message_deleted", handleMessageDeleted);
     };
   }, [selectedConversationId, currentUser?.id]);
 

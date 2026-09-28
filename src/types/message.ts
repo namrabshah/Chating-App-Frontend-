@@ -6,6 +6,7 @@ export interface ReplyToMessagePreview {
   attachmentUrl?: string | null;
   attachmentName?: string | null;
   attachmentType?: string | null;
+  isDeleted?: boolean;
 }
 
 export interface Message {
@@ -13,6 +14,8 @@ export interface Message {
   conversationId: number;
   senderId: number;
   content: string | null;
+  isDeleted: boolean;
+  deletedAt?: string | null;
   isDelivered: boolean;
   isRead: boolean;
   attachmentUrl?: string | null;
@@ -36,4 +39,5 @@ export interface LastMessagePreview {
   attachmentName?: string | null;
   attachmentType?: string | null;
   attachmentSize?: number | null;
+  isDeleted?: boolean;
 }
