@@ -11,9 +11,12 @@ import {
   editMessage,
   deleteMessage,
   markConversationAsRead,
+  toggleMessageReaction,
   Message,
   ReplyToMessagePreview,
 } from "@/services/message.services";
+import { MessageReaction } from "@/types/message";
+import { ReactionPicker } from "@/components/chat/ReactionPicker";
 
 import { useAuthStore } from "@/store/auth.store";
 import { connectSocket } from "@/lib/socket";
@@ -116,6 +119,7 @@ export function ChatWindow() {
   const [highlightedMessageId, setHighlightedMessageId] =
     useState<number | null>(null);
   const [messageMenuId, setMessageMenuId] = useState<number | null>(null);
+  const [reactionPickerMessageId, setReactionPickerMessageId] = useState<number | null>(null);
   const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<number | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -240,6 +244,139 @@ export function ChatWindow() {
         }
       }
 
+      setSendError(messageText);
+    }
+  };
+
+  const handleToggleReaction = async (messageId: number, emoji: string) => {
+    setReactionPickerMessageId(null);
+
+    const targetMessage = messages.find((m) => Number(m.id) === Number(messageId));
+    if (!targetMessage || targetMessage.isDeleted) return;
+
+    const previousReactions = targetMessage.reactions || [];
+    const previousMyReaction = targetMessage.myReaction || null;
+
+    let nextMyReaction: string | null = null;
+    let nextReactions = [...previousReactions];
+
+    if (previousMyReaction === emoji) {
+      nextMyReaction = null;
+      nextReactions = nextReactions
+        .map((group) => {
+          if (group.reaction === emoji) {
+            const newUsers = (group.users || []).filter((u) => {
+              const uid = typeof u === "object" ? u.id : u;
+              return uid !== currentUser?.id;
+            });
+            return {
+              ...group,
+              count: group.count - 1,
+              users: newUsers,
+            };
+          }
+          return group;
+        })
+        .filter((group) => group.count > 0);
+    } else {
+      nextMyReaction = emoji;
+      if (previousMyReaction) {
+        nextReactions = nextReactions
+          .map((group) => {
+            if (group.reaction === previousMyReaction) {
+              const newUsers = (group.users || []).filter((u) => {
+                const uid = typeof u === "object" ? u.id : u;
+                return uid !== currentUser?.id;
+              });
+              return {
+                ...group,
+                count: group.count - 1,
+                users: newUsers,
+              };
+            }
+            return group;
+          })
+          .filter((group) => group.count > 0);
+      }
+
+      const targetIndex = nextReactions.findIndex(
+        (g) => g.reaction === emoji
+      );
+      const currentUserInfo = currentUser
+        ? { id: currentUser.id, name: currentUser.name }
+        : { id: 0, name: "You" };
+
+      if (targetIndex >= 0) {
+        const group = nextReactions[targetIndex];
+        nextReactions[targetIndex] = {
+          ...group,
+          count: group.count + 1,
+          users: [...(group.users || []), currentUserInfo],
+        };
+      } else {
+        nextReactions.push({
+          reaction: emoji,
+          count: 1,
+          users: [currentUserInfo],
+        });
+      }
+    }
+
+    setMessages((previous) =>
+      previous.map((m) =>
+        Number(m.id) === Number(messageId)
+          ? {
+              ...m,
+              reactions: nextReactions,
+              myReaction: nextMyReaction,
+            }
+          : m
+      )
+    );
+
+    try {
+      const response = await toggleMessageReaction(messageId, emoji);
+      if (!response.success) {
+        throw new Error("Reaction toggle failed");
+      }
+
+      setMessages((previous) =>
+        previous.map((m) =>
+          Number(m.id) === Number(messageId)
+            ? {
+                ...m,
+                reactions: response.reactions,
+                myReaction:
+                  response.myReaction !== undefined
+                    ? response.myReaction
+                    : response.action === "removed"
+                    ? null
+                    : response.reaction,
+              }
+            : m
+        )
+      );
+    } catch (error) {
+      console.error("TOGGLE REACTION ERROR:", error);
+      setMessages((previous) =>
+        previous.map((m) =>
+          Number(m.id) === Number(messageId)
+            ? {
+                ...m,
+                reactions: previousReactions,
+                myReaction: previousMyReaction,
+              }
+            : m
+        )
+      );
+
+      let messageText = "Failed to update reaction. Please try again.";
+      if (axios.isAxiosError(error)) {
+        const apiMessage = error.response?.data?.message;
+        if (typeof apiMessage === "string" && apiMessage.trim()) {
+          messageText = apiMessage;
+        }
+      }
       setSendError(messageText);
     }
   };
@@ -556,10 +693,53 @@ export function ChatWindow() {
       );
     };
 
+    const handleReactionUpdated = (data: {
+      messageId: number;
+      conversationId: number;
+      reactions: MessageReaction[];
+      userId: number;
+      reaction: string | null;
+      action: "added" | "updated" | "removed";
+    }) => {
+      console.log("[SOCKET] MESSAGE REACTION UPDATED:", data);
+
+      if (
+        !conversationId ||
+        Number.isNaN(conversationId) ||
+        Number(data.conversationId) !== Number(conversationId)
+      ) {
+        return;
+      }
+
+      setMessages((previousMessages) =>
+        previousMessages.map((msg) => {
+          if (Number(msg.id) === Number(data.messageId)) {
+            let updatedMyReaction = msg.myReaction;
+
+            if (
+              currentUserRef.current?.id != null &&
+              Number(data.userId) === Number(currentUserRef.current.id)
+            ) {
+              updatedMyReaction =
+                data.action === "removed" ? null : data.reaction;
+            }
+
+            return {
+              ...msg,
+              reactions: data.reactions,
+              myReaction: updatedMyReaction,
+            };
+          }
+          return msg;
+        })
+      );
+    };
+
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
     socket.on("new_message", handleNewMessage);
     socket.on("message_updated", handleMessageUpdated);
+    socket.on("message_reaction_updated", handleReactionUpdated);
     socket.on("message_deleted", handleMessageDeleted);
     socket.on("message_delivery_updated", handleDeliveryUpdate);
     socket.on("message_read_updated", handleReadUpdate);
@@ -586,6 +766,7 @@ export function ChatWindow() {
       socket.off("disconnect", handleDisconnect);
       socket.off("new_message", handleNewMessage);
       socket.off("message_updated", handleMessageUpdated);
+      socket.off("message_reaction_updated", handleReactionUpdated);
       socket.off("message_deleted", handleMessageDeleted);
       socket.off("message_delivery_updated", handleDeliveryUpdate);
       socket.off("message_read_updated", handleReadUpdate);
@@ -1009,6 +1190,19 @@ export function ChatWindow() {
                       )}
                       <button
                         type="button"
+                        onClick={() =>
+                          setReactionPickerMessageId((prev) =>
+                            prev === message.id ? null : message.id
+                          )
+                        }
+                        className="rounded p-1 text-xs text-gray-400 hover:text-amber-500 transition"
+                        aria-label="Add reaction"
+                        title="React"
+                      >
+                        🙂
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setReplyingTo(message)}
                         className="rounded p-1 text-xs text-gray-400 hover:text-blue-600 transition"
                         aria-label="Reply to message"
@@ -1028,104 +1222,190 @@ export function ChatWindow() {
                     </div>
                   )}
 
-                  <div
-                    className={`max-w-[min(70%,24rem)] overflow-hidden rounded-2xl px-3 py-2 sm:px-4 ${
-                      isDeletedMessage
-                        ? "rounded-md border border-gray-200 bg-gray-100 text-gray-500 italic"
-                        : isMine
-                        ? "rounded-br-md bg-blue-600 text-white"
-                        : "rounded-bl-md bg-gray-100 text-gray-800"
-                    }`}
-                  >
-                    {message.replyToMessage && (
-                      <div
-                        onClick={() =>
-                          handleScrollToMessage(message.replyToMessage!.id)
+                  <div className="relative flex flex-col max-w-[min(70%,24rem)]">
+                    {reactionPickerMessageId === message.id && !isDeletedMessage && (
+                      <ReactionPicker
+                        onSelectReaction={(emoji) =>
+                          handleToggleReaction(message.id, emoji)
                         }
-                        className={`mb-1.5 cursor-pointer rounded-lg border-l-4 px-2.5 py-1 text-xs transition ${
-                          isDeletedMessage
-                            ? "border-gray-300 bg-gray-200 text-gray-600"
-                            : isMine
-                            ? "border-white/80 bg-blue-700/70 text-white hover:bg-blue-700"
-                            : "border-blue-500 bg-gray-200/80 text-gray-800 hover:bg-gray-200"
-                        }`}
-                        title="Click to view original message"
-                      >
-                        <div className="font-semibold opacity-90">
-                          {message.replyToMessage.senderName ||
-                            getSenderName(
-                              message.replyToMessage.senderId,
-                              currentUser?.id,
-                              otherUser.name
-                            )}
-                        </div>
-                        <div className="truncate opacity-80">
-                          {getReplyPreviewLabel(message.replyToMessage)}
-                        </div>
-                      </div>
-                    )}
-
-                    {!isDeletedMessage && message.attachmentUrl && (
-                      <AttachmentMessage
-                        message={message}
+                        onClose={() => setReactionPickerMessageId(null)}
+                        currentReaction={message.myReaction}
                         isMine={isMine}
                       />
                     )}
 
-                    {isDeletedMessage ? (
-                      <p className="break-words text-sm">This message was deleted</p>
-                    ) : message.content ? (
-                      <p className="break-words text-sm">{message.content}</p>
-                    ) : null}
+                    <div
+                      className={`overflow-hidden rounded-2xl px-3 py-2 sm:px-4 ${
+                        isDeletedMessage
+                          ? "rounded-md border border-gray-200 bg-gray-100 text-gray-500 italic"
+                          : isMine
+                          ? "rounded-br-md bg-blue-600 text-white"
+                          : "rounded-bl-md bg-gray-100 text-gray-800"
+                      }`}
+                    >
+                      {message.replyToMessage && (
+                        <div
+                          onClick={() =>
+                            handleScrollToMessage(message.replyToMessage!.id)
+                          }
+                          className={`mb-1.5 cursor-pointer rounded-lg border-l-4 px-2.5 py-1 text-xs transition ${
+                            isDeletedMessage
+                              ? "border-gray-300 bg-gray-200 text-gray-600"
+                              : isMine
+                              ? "border-white/80 bg-blue-700/70 text-white hover:bg-blue-700"
+                              : "border-blue-500 bg-gray-200/80 text-gray-800 hover:bg-gray-200"
+                          }`}
+                          title="Click to view original message"
+                        >
+                          <div className="font-semibold opacity-90">
+                            {message.replyToMessage.senderName ||
+                              getSenderName(
+                                message.replyToMessage.senderId,
+                                currentUser?.id,
+                                otherUser.name
+                              )}
+                          </div>
+                          <div className="truncate opacity-80">
+                            {getReplyPreviewLabel(message.replyToMessage)}
+                          </div>
+                        </div>
+                      )}
 
-                    {!isDeletedMessage && (
+                      {!isDeletedMessage && message.attachmentUrl && (
+                        <AttachmentMessage
+                          message={message}
+                          isMine={isMine}
+                        />
+                      )}
+
+                      {isDeletedMessage ? (
+                        <p className="break-words text-sm">This message was deleted</p>
+                      ) : message.content ? (
+                        <p className="break-words text-sm">{message.content}</p>
+                      ) : null}
+
+                      {!isDeletedMessage && (
+                        <div
+                          className={`mt-1 flex items-center justify-end text-[10px] ${
+                            isMine ? "text-blue-100" : "text-gray-400"
+                          }`}
+                        >
+                          <span>
+                            {new Date(message.createdAt).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </span>
+
+                          {message.isEdited && (
+                            <span
+                              className={`ml-1 font-normal italic ${
+                                isMine ? "text-blue-200" : "text-gray-400"
+                              }`}
+                              title={
+                                message.editedAt
+                                  ? `Edited ${new Date(
+                                      message.editedAt
+                                    ).toLocaleTimeString([], {
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    })}`
+                                  : "Edited"
+                              }
+                            >
+                              · edited
+                            </span>
+                          )}
+
+                          {renderMessageStatus(message, isMine)}
+                        </div>
+                      )}
+                    </div>
+
+                    {message.reactions && message.reactions.length > 0 && !isDeletedMessage && (
                       <div
-                        className={`mt-1 flex items-center justify-end text-[10px] ${
-                          isMine ? "text-blue-100" : "text-gray-400"
+                        className={`mt-1 flex flex-wrap items-center gap-1 ${
+                          isMine ? "justify-end" : "justify-start"
                         }`}
                       >
-                        <span>
-                          {new Date(message.createdAt).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </span>
+                        {message.reactions.map((rGroup) => {
+                          const isMyReactionGroup =
+                            message.myReaction === rGroup.reaction;
+                          const userNamesList = (rGroup.users || [])
+                            .map((u) => (typeof u === "object" ? u.name : `User ${u}`))
+                            .join(", ");
 
-                        {message.isEdited && (
-                          <span
-                            className={`ml-1 font-normal italic ${
-                              isMine ? "text-blue-200" : "text-gray-400"
-                            }`}
-                            title={
-                              message.editedAt
-                                ? `Edited ${new Date(
-                                    message.editedAt
-                                  ).toLocaleTimeString([], {
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  })}`
-                                : "Edited"
-                            }
-                          >
-                            · edited
-                          </span>
-                        )}
+                          return (
+                            <div key={rGroup.reaction} className="relative group/pill">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void handleToggleReaction(
+                                    message.id,
+                                    rGroup.reaction
+                                  );
+                                }}
+                                aria-label={`Reaction ${rGroup.reaction}, count ${rGroup.count}${
+                                  userNamesList
+                                    ? `, reacted by ${userNamesList}`
+                                    : ""
+                                }`}
+                                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition cursor-pointer select-none ${
+                                  isMyReactionGroup
+                                    ? "border-blue-300 bg-blue-50 text-blue-700 shadow-sm font-semibold ring-1 ring-blue-200"
+                                    : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
+                                }`}
+                              >
+                                <span>{rGroup.reaction}</span>
+                                <span className="text-[11px] font-semibold">
+                                  {rGroup.count}
+                                </span>
+                              </button>
 
-                        {renderMessageStatus(message, isMine)}
+                              {userNamesList && (
+                                <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover/pill:flex flex-col items-center z-30 pointer-events-none">
+                                  <div className="rounded-md bg-gray-900/90 backdrop-blur-sm px-2.5 py-1 text-[11px] font-medium text-white shadow-lg whitespace-nowrap">
+                                    <span className="font-semibold mr-1">
+                                      {rGroup.reaction}
+                                    </span>
+                                    {userNamesList}
+                                  </div>
+                                  <div className="w-1.5 h-1.5 bg-gray-900/90 rotate-45 -mt-1"></div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
 
                   {!isMine && !isDeletedMessage && (
-                    <button
-                      type="button"
-                      onClick={() => setReplyingTo(message)}
-                      className="opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0 rounded p-1 text-xs text-gray-400 hover:text-blue-600 transition"
-                      aria-label="Reply to message"
-                      title="Reply"
-                    >
-                      ↩
-                    </button>
+                    <div className="relative flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition shrink-0">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setReactionPickerMessageId((prev) =>
+                            prev === message.id ? null : message.id
+                          )
+                        }
+                        className="rounded p-1 text-xs text-gray-400 hover:text-amber-500 transition"
+                        aria-label="Add reaction"
+                        title="React"
+                      >
+                        🙂
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setReplyingTo(message)}
+                        className="rounded p-1 text-xs text-gray-400 hover:text-blue-600 transition"
+                        aria-label="Reply to message"
+                        title="Reply"
+                      >
+                        ↩
+                      </button>
+                    </div>
                   )}
 
                   {messageMenuId === message.id && !isDeletedMessage && (

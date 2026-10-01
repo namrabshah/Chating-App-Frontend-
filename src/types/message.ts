@@ -9,6 +9,17 @@ export interface ReplyToMessagePreview {
   isDeleted?: boolean;
 }
 
+export interface ReactionUser {
+  id: number;
+  name: string;
+}
+
+export interface MessageReaction {
+  reaction: string;
+  count: number;
+  users?: (ReactionUser | number)[];
+}
+
 export interface Message {
   id: number;
   conversationId: number;
@@ -26,6 +37,8 @@ export interface Message {
   replyToMessage?: ReplyToMessagePreview | null;
   isEdited?: boolean;
   editedAt?: string | null;
+  reactions?: MessageReaction[];
+  myReaction?: string | null;
   createdAt: string;
   updatedAt?: string;
 }

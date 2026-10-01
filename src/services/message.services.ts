@@ -117,3 +117,24 @@ export const deleteMessage = async (
 
   return response.data;
 };
+
+export interface ToggleReactionResponse {
+  success: boolean;
+  action: "added" | "updated" | "removed";
+  messageId: number;
+  reaction: string | null;
+  reactions: Message["reactions"];
+  myReaction?: string | null;
+}
+
+export const toggleMessageReaction = async (
+  messageId: number,
+  reaction: string
+): Promise<ToggleReactionResponse> => {
+  const response = await api.put<ToggleReactionResponse>(
+    `/messages/${messageId}/reaction`,
+    { reaction }
+  );
+
+  return response.data;
+};
