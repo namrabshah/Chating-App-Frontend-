@@ -123,16 +123,23 @@ export function ChatWindow() {
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState<number | null>(null);
   const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<number | null>(null);
 
+  const [page, setPage] = useState<number>(1);
+  const [hasMore, setHasMore] = useState<boolean>(true);
+  const [loadingOlder, setLoadingOlder] = useState<boolean>(false);
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messageContainerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const socketRef = useRef<ReturnType<typeof connectSocket> | null>(null);
   const activeTypingConvIdRef = useRef<number | null>(null);
   const currentUserRef = useRef(currentUser);
-const [searchQuery, setSearchQuery] = useState("");
-const [searchResults, setSearchResults] = useState<Message[]>([]);
-const [searching, setSearching] = useState(false);
-const [showSearch, setShowSearch] = useState(false);
+  const isInitialLoadRef = useRef<boolean>(true);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<Message[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
 
   useEffect(() => {
     currentUserRef.current = currentUser;
@@ -142,7 +149,7 @@ const [showSearch, setShowSearch] = useState(false);
     ? Number(conversationIdParam)
     : null;
 
-  // Reset typing UI immediately when switching conversations (render-time adjust)
+  // Reset typing UI & pagination immediately when switching conversations (render-time adjust)
   const [typingTrackedConversationId, setTypingTrackedConversationId] =
     useState<number | null>(conversationId);
 
@@ -159,6 +166,10 @@ const [showSearch, setShowSearch] = useState(false);
     setSearchResults([]);
     setSearching(false);
     setHighlightedMessageId(null);
+    setPage(1);
+    setHasMore(true);
+    setLoadingOlder(false);
+    isInitialLoadRef.current = true;
   }
 
   const clearTypingTimeout = () => {
@@ -414,16 +425,24 @@ const [showSearch, setShowSearch] = useState(false);
     const loadChat = async () => {
       try {
         setLoading(true);
+        setPage(1);
+        setHasMore(true);
+        setLoadingOlder(false);
+        isInitialLoadRef.current = true;
 
-        const [conversationData, messagesData] = await Promise.all([
+        const [conversationData, messagesRes] = await Promise.all([
           getConversationDetails(conversationId),
-          getMessages(conversationId),
+          getMessages(conversationId, 1, 20),
         ]);
 
         if (cancelled) return;
 
         setConversation(conversationData);
-        setMessages(Array.isArray(messagesData) ? messagesData : []);
+        setMessages(
+          Array.isArray(messagesRes?.messages) ? messagesRes.messages : []
+        );
+        setHasMore(Boolean(messagesRes?.hasMore));
+        setPage(1);
         setSelectedFile(null);
         setContent("");
         setSendError(null);
@@ -546,6 +565,9 @@ const [showSearch, setShowSearch] = useState(false);
         return;
       }
 
+      const isMine =
+        Number(newMessage.senderId) === Number(currentUserRef.current?.id);
+
       setMessages((previousMessages) => {
         const exists = previousMessages.some(
           (item) => Number(item.id) === Number(newMessage.id)
@@ -558,9 +580,19 @@ const [showSearch, setShowSearch] = useState(false);
         return [...previousMessages, newMessage];
       });
 
-      if (
-        Number(newMessage.senderId) !== Number(currentUserRef.current?.id)
-      ) {
+      const container = messageContainerRef.current;
+      const isNearBottom =
+        container &&
+        container.scrollTop + container.clientHeight >=
+          container.scrollHeight - 200;
+
+      if (isMine || isNearBottom) {
+        requestAnimationFrame(() => {
+          scrollToBottom(true);
+        });
+      }
+
+      if (!isMine) {
         // Incoming message from the other user ends their typing indicator
         setIsOtherUserTyping(false);
 
@@ -789,17 +821,90 @@ const [showSearch, setShowSearch] = useState(false);
   }, [conversationId]);
 
   // ========================================
-  // AUTO SCROLL TO LATEST MESSAGE
+  // SCROLL & PAGINATION HELPERS
   // ========================================
 
-  useEffect(() => {
-    if (!messagesEndRef.current) return;
+  const scrollToBottom = (smooth = true) => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({
+        behavior: smooth ? "smooth" : "auto",
+        block: "end",
+      });
+    } else if (messageContainerRef.current) {
+      messageContainerRef.current.scrollTop =
+        messageContainerRef.current.scrollHeight;
+    }
+  };
 
-    messagesEndRef.current.scrollIntoView({
-      behavior: "smooth",
-      block: "end",
-    });
-  }, [messages, selectedFile]);
+  useEffect(() => {
+    if (isInitialLoadRef.current && messages.length > 0 && !loading) {
+      isInitialLoadRef.current = false;
+      requestAnimationFrame(() => {
+        scrollToBottom(false);
+      });
+    }
+  }, [messages, loading]);
+
+  const loadOlderMessages = async () => {
+    if (!conversationId || loadingOlder || !hasMore || loading) return;
+
+    const container = messageContainerRef.current;
+    if (!container) return;
+
+    const oldScrollTop = container.scrollTop;
+    const oldScrollHeight = container.scrollHeight;
+
+    try {
+      setLoadingOlder(true);
+      const nextPage = page + 1;
+      const response = await getMessages(conversationId, nextPage, 20);
+
+      if (!response || !Array.isArray(response.messages)) {
+        return;
+      }
+
+      const olderMessages = response.messages;
+
+      if (olderMessages.length > 0) {
+        setMessages((prevMessages) => {
+          const existingIds = new Set(prevMessages.map((m) => m.id));
+          const uniqueOlder = olderMessages.filter(
+            (m) => !existingIds.has(m.id)
+          );
+          return [...uniqueOlder, ...prevMessages];
+        });
+        setPage(nextPage);
+      }
+
+      setHasMore(Boolean(response.hasMore));
+
+      requestAnimationFrame(() => {
+        if (messageContainerRef.current) {
+          const newScrollHeight = messageContainerRef.current.scrollHeight;
+          const heightDiff = newScrollHeight - oldScrollHeight;
+          messageContainerRef.current.scrollTop = oldScrollTop + heightDiff;
+        }
+      });
+    } catch (error) {
+      console.error("Error loading older messages:", error);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
+  const handleScroll = () => {
+    const container = messageContainerRef.current;
+    if (!container) return;
+
+    if (
+      container.scrollTop < 80 &&
+      hasMore &&
+      !loadingOlder &&
+      !loading
+    ) {
+      void loadOlderMessages();
+    }
+  };
 
   // ========================================
   // FILE PICKER
@@ -993,6 +1098,10 @@ const [showSearch, setShowSearch] = useState(false);
       setSelectedFile(null);
       setReplyingTo(null);
       setIsOtherUserTyping(false);
+
+      requestAnimationFrame(() => {
+        scrollToBottom(true);
+      });
     } catch (error) {
       console.error("MESSAGE API ERROR:", error);
 
@@ -1380,7 +1489,20 @@ const [showSearch, setShowSearch] = useState(false);
       )}
 
       {/* MESSAGES CONTAINER */}
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-5">
+      <div
+        ref={messageContainerRef}
+        onScroll={handleScroll}
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-5"
+      >
+        {loadingOlder && (
+          <div className="mb-3 flex shrink-0 items-center justify-center">
+            <div className="flex items-center gap-2 rounded-full border border-gray-200 bg-white/90 px-3.5 py-1.5 text-xs font-medium text-gray-600 shadow-sm backdrop-blur-sm">
+              <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+              <span>Loading older messages...</span>
+            </div>
+          </div>
+        )}
+
         {messages.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <p className="text-sm text-gray-400">No messages yet</p>

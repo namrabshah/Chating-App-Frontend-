@@ -7,6 +7,8 @@ export interface GetMessagesResponse {
   success: boolean;
   page?: number;
   limit?: number;
+  total?: number;
+  hasMore?: boolean;
   messages: Message[];
 }
 
@@ -16,13 +18,21 @@ export interface SendMessageResponse {
 }
 
 export const getMessages = async (
-  conversationId: number
-): Promise<Message[]> => {
+  conversationId: number,
+  page: number = 1,
+  limit: number = 20
+): Promise<GetMessagesResponse> => {
   const response = await api.get<GetMessagesResponse>(
-    `/messages/${conversationId}`
+    `/messages/${conversationId}`,
+    {
+      params: {
+        page,
+        limit,
+      },
+    }
   );
 
-  return response.data.messages;
+  return response.data;
 };
 
 export const sendMessage = async (
