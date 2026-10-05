@@ -4,6 +4,8 @@ import React, { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import UserSearch from "@/components/user/UserSearch";
+import ProfileModal from "@/components/profile/ProfileModal";
+import { getMyProfile } from "@/services/user.service";
 import {
   createConversation,
   getConversationDetails,
@@ -14,7 +16,7 @@ import { User } from "@/types/auth";
 import { useAuthStore } from "@/store/auth.store";
 import { connectSocket } from "@/lib/socket";
 import { getToken } from "@/lib/auth";
-import { getLastMessagePreview } from "@/lib/file";
+import { getLastMessagePreview, getAttachmentUrl } from "@/lib/file";
 
 interface NewMessagePayload {
   id: number;
@@ -65,6 +67,27 @@ export function ConversationList() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+
+  // ========================================
+  // LOAD USER PROFILE ON MOUNT IF NOT SET
+  // ========================================
+
+  useEffect(() => {
+    const loadProfile = async () => {
+      const token = getToken();
+      if (token && !currentUser) {
+        try {
+          const userProfile = await getMyProfile();
+          useAuthStore.getState().setUser(userProfile);
+        } catch (error) {
+          console.error("Fetch current user profile error:", error);
+        }
+      }
+    };
+
+    loadProfile();
+  }, [currentUser]);
 
   // ========================================
   // LOAD CONVERSATIONS ON MOUNT
@@ -427,8 +450,50 @@ export function ConversationList() {
 
   return (
     <div className="flex h-full w-80 shrink-0 flex-col border-r border-gray-200 bg-gray-50">
+      {/* Profile Modal */}
+      <ProfileModal
+        isOpen={isProfileOpen}
+        onClose={() => setIsProfileOpen(false)}
+      />
+
       {/* Header */}
       <div className="p-4 border-b border-gray-200 bg-white">
+        {currentUser && (
+          <div className="mb-3.5 flex items-center justify-between gap-2 rounded-xl bg-gray-50 p-2.5 border border-gray-100">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-blue-100 font-semibold text-blue-600 border border-blue-200">
+                {currentUser.avatar ? (
+                  <img
+                    src={getAttachmentUrl(currentUser.avatar)}
+                    alt={currentUser.name}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  currentUser.name ? currentUser.name.charAt(0).toUpperCase() : "?"
+                )}
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-gray-800">
+                  {currentUser.name}
+                </p>
+                <p className="truncate text-[11px] text-gray-500">
+                  {currentUser.email}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsProfileOpen(true)}
+              className="shrink-0 rounded-lg p-1.5 text-gray-500 hover:bg-white hover:text-blue-600 hover:shadow-sm transition"
+              title="Edit Profile"
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </button>
+          </div>
+        )}
         <h3 className="mb-3 font-semibold text-gray-800">Conversations</h3>
         <UserSearch onUserSelect={handleUserSelect} />
         {creating && (

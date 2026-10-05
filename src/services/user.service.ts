@@ -11,8 +11,35 @@ interface MyProfileResponse {
   user: User;
 }
 
+export interface UpdateProfilePayload {
+  name?: string;
+  avatarFile?: File | null;
+}
+
+interface UpdateProfileResponse {
+  success: boolean;
+  message: string;
+  user: User;
+}
+
 export const getMyProfile = async (): Promise<User> => {
   const response = await api.get<MyProfileResponse>("/users/me");
+
+  return response.data.user;
+};
+
+export const updateMyProfile = async (
+  payload: UpdateProfilePayload
+): Promise<User> => {
+  const formData = new FormData();
+  if (payload.name !== undefined) {
+    formData.append("name", payload.name);
+  }
+  if (payload.avatarFile) {
+    formData.append("avatar", payload.avatarFile);
+  }
+
+  const response = await api.patch<UpdateProfileResponse>("/users/me", formData);
 
   return response.data.user;
 };

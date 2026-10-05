@@ -26,6 +26,7 @@ import {
   ACCEPTED_FILE_TYPES,
   validateAttachmentFile,
   isDocumentType,
+  getAttachmentUrl,
 } from "@/lib/file";
 import { AttachmentPreview } from "@/components/chat/AttachmentPreview";
 import { AttachmentMessage } from "@/components/chat/AttachmentMessage";
@@ -1315,7 +1316,7 @@ export function ChatWindow() {
           <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-blue-100 font-semibold text-blue-600">
             {otherUser.avatar ? (
               <img
-                src={otherUser.avatar}
+                src={getAttachmentUrl(otherUser.avatar)}
                 alt={otherUser.name}
                 className="h-full w-full object-cover"
               />
