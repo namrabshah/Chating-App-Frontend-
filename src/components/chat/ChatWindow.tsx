@@ -8,6 +8,7 @@ import { getConversationDetails } from "@/services/conversation.service";
 import {
   getMessages,
   sendMessage,
+  searchMessages,
   editMessage,
   deleteMessage,
   markConversationAsRead,
@@ -128,6 +129,10 @@ export function ChatWindow() {
   const socketRef = useRef<ReturnType<typeof connectSocket> | null>(null);
   const activeTypingConvIdRef = useRef<number | null>(null);
   const currentUserRef = useRef(currentUser);
+const [searchQuery, setSearchQuery] = useState("");
+const [searchResults, setSearchResults] = useState<Message[]>([]);
+const [searching, setSearching] = useState(false);
+const [showSearch, setShowSearch] = useState(false);
 
   useEffect(() => {
     currentUserRef.current = currentUser;
@@ -146,6 +151,14 @@ export function ChatWindow() {
     if (isOtherUserTyping) {
       setIsOtherUserTyping(false);
     }
+    setReplyingTo(null);
+    setEditingMessageId(null);
+    setEditingOriginalMessage(null);
+    setShowSearch(false);
+    setSearchQuery("");
+    setSearchResults([]);
+    setSearching(false);
+    setHighlightedMessageId(null);
   }
 
   const clearTypingTimeout = () => {
@@ -387,9 +400,6 @@ export function ChatWindow() {
 
   useEffect(() => {
     clearTypingTimeout();
-    setReplyingTo(null);
-    setEditingMessageId(null);
-    setEditingOriginalMessage(null);
 
     if (activeTypingConvIdRef.current != null) {
       emitStopTyping(activeTypingConvIdRef.current);
@@ -1006,6 +1016,80 @@ export function ChatWindow() {
   };
 
   // ========================================
+  // SEARCH HANDLERS
+  // ========================================
+
+  const handleResetSearch = () => {
+    setShowSearch(false);
+    setSearchQuery("");
+    setSearchResults([]);
+    setSearching(false);
+    setHighlightedMessageId(null);
+  };
+
+  const handleSearchMessages = async () => {
+    const query = searchQuery.trim();
+
+    if (!conversationId || Number.isNaN(conversationId)) {
+      return;
+    }
+
+    if (!query) {
+      setSearchResults([]);
+      return;
+    }
+
+    try {
+      setSearching(true);
+
+      const results = await searchMessages(conversationId, query);
+      setSearchResults(results || []);
+    } catch (error) {
+      console.error("Message search error:", error);
+      setSearchResults([]);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const handleSearchResultClick = (messageId: number) => {
+    const exists = messages.some((m) => Number(m.id) === Number(messageId));
+    if (!exists) {
+      const foundInSearch = searchResults.find(
+        (m) => Number(m.id) === Number(messageId)
+      );
+      if (foundInSearch) {
+        setMessages((prev) => {
+          const updated = [...prev, foundInSearch];
+          return updated.sort(
+            (a, b) =>
+              new Date(a.createdAt).getTime() -
+              new Date(b.createdAt).getTime()
+          );
+        });
+      }
+    }
+
+    setTimeout(() => {
+      const element = document.getElementById(`message-${messageId}`);
+      if (!element) {
+        return;
+      }
+
+      element.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+
+      setHighlightedMessageId(messageId);
+
+      setTimeout(() => {
+        setHighlightedMessageId((prev) => (prev === messageId ? null : prev));
+      }, 1500);
+    }, 50);
+  };
+
+  // ========================================
   // KEYBOARD HANDLER
   // ========================================
 
@@ -1117,39 +1201,183 @@ export function ChatWindow() {
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col bg-white">
       {/* CHAT HEADER */}
-      <div className="flex shrink-0 items-center gap-3 border-b px-5 py-3">
-        <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-blue-100 font-semibold text-blue-600">
-          {otherUser.avatar ? (
-            <img
-              src={otherUser.avatar}
-              alt={otherUser.name}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            otherUser.name.charAt(0).toUpperCase()
-          )}
+      <div className="flex shrink-0 items-center justify-between border-b px-5 py-3 bg-white">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-blue-100 font-semibold text-blue-600">
+            {otherUser.avatar ? (
+              <img
+                src={otherUser.avatar}
+                alt={otherUser.name}
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              otherUser.name.charAt(0).toUpperCase()
+            )}
 
-          {otherUser.isOnline && (
-            <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white bg-green-500" />
-          )}
+            {otherUser.isOnline && (
+              <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white bg-green-500" />
+            )}
+          </div>
+
+          <div className="min-w-0">
+            <h2 className="truncate font-semibold text-gray-800">
+              {otherUser.name}
+            </h2>
+
+            <p className="text-xs text-gray-500">
+              {isOtherUserTyping ? (
+                <span className="text-blue-500">typing...</span>
+              ) : otherUser.isOnline ? (
+                "Online"
+              ) : (
+                "Offline"
+              )}
+            </p>
+          </div>
         </div>
 
-        <div className="min-w-0">
-          <h2 className="truncate font-semibold text-gray-800">
-            {otherUser.name}
-          </h2>
-
-          <p className="text-xs text-gray-500">
-            {isOtherUserTyping ? (
-              <span className="text-blue-500">typing...</span>
-            ) : otherUser.isOnline ? (
-              "Online"
-            ) : (
-              "Offline"
-            )}
-          </p>
+        {/* SEARCH TOGGLE BUTTON */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              if (showSearch) {
+                handleResetSearch();
+              } else {
+                setShowSearch(true);
+              }
+            }}
+            className={`rounded-lg p-2 text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition ${
+              showSearch ? "bg-blue-50 text-blue-600" : ""
+            }`}
+            title="Search messages"
+            aria-label="Search messages"
+          >
+            🔍
+          </button>
         </div>
       </div>
+
+      {/* SEARCH PANEL BAR */}
+      {showSearch && (
+        <div className="shrink-0 border-b bg-gray-50/90 p-3 backdrop-blur-sm transition">
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1 min-w-0">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(event) => {
+                  const val = event.target.value;
+                  setSearchQuery(val);
+                  if (!val.trim()) {
+                    setSearchResults([]);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    handleSearchMessages();
+                  }
+
+                  if (event.key === "Escape") {
+                    handleResetSearch();
+                  }
+                }}
+                placeholder="Search messages..."
+                autoFocus
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery("");
+                    setSearchResults([]);
+                  }}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-600"
+                  title="Clear input"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={handleSearchMessages}
+              disabled={searching || !searchQuery.trim()}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition shrink-0"
+            >
+              {searching ? "Searching..." : "Search"}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleResetSearch}
+              className="rounded-lg p-2 text-gray-500 hover:bg-gray-200 hover:text-gray-700 transition shrink-0"
+              title="Close search"
+              aria-label="Close search"
+            >
+              ✕
+            </button>
+          </div>
+
+          {searching && (
+            <p className="mt-2.5 text-xs text-gray-500 animate-pulse">
+              Searching messages...
+            </p>
+          )}
+
+          {!searching && searchQuery.trim() !== "" && searchResults.length > 0 && (
+            <div className="mt-2.5 max-h-60 overflow-y-auto rounded-lg border bg-white shadow-sm divide-y">
+              <div className="bg-gray-50 px-3 py-1.5 text-xs font-semibold text-gray-500 flex justify-between items-center">
+                <span>Search results</span>
+                <span>
+                  {searchResults.length} message
+                  {searchResults.length === 1 ? "" : "s"} found
+                </span>
+              </div>
+              {searchResults.map((message) => {
+                const senderDisplayName = getSenderName(
+                  message.senderId,
+                  currentUser?.id,
+                  otherUser.name
+                );
+                const timeStr = new Date(message.createdAt).toLocaleTimeString(
+                  [],
+                  { hour: "2-digit", minute: "2-digit" }
+                );
+
+                return (
+                  <button
+                    key={message.id}
+                    type="button"
+                    onClick={() => handleSearchResultClick(message.id)}
+                    className="block w-full px-3 py-2 text-left hover:bg-blue-50/60 transition group"
+                  >
+                    <div className="flex items-center justify-between text-xs text-gray-500 mb-0.5">
+                      <span className="font-semibold text-gray-700">
+                        {senderDisplayName}
+                      </span>
+                      <span className="text-[11px] text-gray-400">
+                        {timeStr}
+                      </span>
+                    </div>
+                    <p className="truncate text-sm text-gray-800">
+                      {message.content || (message.attachmentName ? `📎 ${message.attachmentName}` : "Attachment")}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {!searching && searchQuery.trim() !== "" && searchResults.length === 0 && (
+            <p className="mt-2 text-sm text-gray-500">
+              No messages found
+            </p>
+          )}
+        </div>
+      )}
 
       {/* MESSAGES CONTAINER */}
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-5">
@@ -1222,7 +1450,7 @@ export function ChatWindow() {
                     </div>
                   )}
 
-                  <div className="relative flex flex-col max-w-[min(70%,24rem)]">
+                  <div className={`relative flex flex-col max-w-[75%] sm:max-w-[70%] ${isMine ? "items-end" : "items-start"}`}>
                     {reactionPickerMessageId === message.id && !isDeletedMessage && (
                       <ReactionPicker
                         onSelectReaction={(emoji) =>
@@ -1235,10 +1463,12 @@ export function ChatWindow() {
                     )}
 
                     <div
-                      className={`overflow-hidden rounded-2xl px-3 py-2 sm:px-4 ${
-                        isDeletedMessage
-                          ? "rounded-md border border-gray-200 bg-gray-100 text-gray-500 italic"
-                          : isMine
+                      className={`w-fit max-w-full overflow-hidden rounded-2xl px-3.5 py-2 transition-all ${
+                        highlightedMessageId === message.id
+                          ? "ring-4 ring-yellow-300"
+                          : ""
+                      } ${
+                        isMine
                           ? "rounded-br-md bg-blue-600 text-white"
                           : "rounded-bl-md bg-gray-100 text-gray-800"
                       }`}
@@ -1279,9 +1509,9 @@ export function ChatWindow() {
                       )}
 
                       {isDeletedMessage ? (
-                        <p className="break-words text-sm">This message was deleted</p>
+                        <p className="text-sm whitespace-pre-wrap">This message was deleted</p>
                       ) : message.content ? (
-                        <p className="break-words text-sm">{message.content}</p>
+                        <p className="text-sm whitespace-pre-wrap">{message.content}</p>
                       ) : null}
 
                       {!isDeletedMessage && (
@@ -1324,7 +1554,7 @@ export function ChatWindow() {
 
                     {message.reactions && message.reactions.length > 0 && !isDeletedMessage && (
                       <div
-                        className={`mt-1 flex flex-wrap items-center gap-1 ${
+                        className={`mt-1 flex w-full flex-wrap gap-1 ${
                           isMine ? "justify-end" : "justify-start"
                         }`}
                       >

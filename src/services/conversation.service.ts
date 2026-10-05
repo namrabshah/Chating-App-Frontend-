@@ -26,7 +26,7 @@ export interface GetConversationsResponse {
   conversations: Conversation[];
 }
 
-export interface ConversationDetails extends Conversation {}
+export type ConversationDetails = Conversation;
 
 export interface ConversationDetailsResponse {
   success: boolean;

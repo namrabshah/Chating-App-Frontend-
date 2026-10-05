@@ -1,10 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import {
-  formatFileSize,
-  getAttachmentUrl,
-} from "@/lib/file";
+import { getAttachmentUrl } from "@/lib/file";
 
 interface ImageMessageProps {
   url: string;

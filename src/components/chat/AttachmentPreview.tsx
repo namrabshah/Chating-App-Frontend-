@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect } from "react";
 import {
   formatFileSize,
   isDocumentType,
@@ -16,22 +16,22 @@ export function AttachmentPreview({
   file,
   onRemove,
 }: AttachmentPreviewProps) {
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const isImage = isImageType(file.type) || file.type === "";
 
-  useEffect(() => {
-    if (!isImageType(file.type)) {
-      setPreviewUrl(null);
-      return;
+  const previewUrl = React.useMemo(() => {
+    if (isImageType(file.type)) {
+      return URL.createObjectURL(file);
     }
-
-    const url = URL.createObjectURL(file);
-    setPreviewUrl(url);
-
-    return () => {
-      URL.revokeObjectURL(url);
-    };
+    return null;
   }, [file]);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+    };
+  }, [previewUrl]);
 
   if (previewUrl && isImageType(file.type)) {
     return (

@@ -91,19 +91,18 @@ export function ConversationList() {
   // RESET UNREAD COUNT FOR OPEN CONVERSATION
   // ========================================
 
-  useEffect(() => {
-    if (!selectedConversationId || Number.isNaN(selectedConversationId)) return;
+  const [trackedSelectedId, setTrackedSelectedId] = useState<number | null>(selectedConversationId);
 
-    console.log("CURRENT OPEN CONVERSATION:", selectedConversationId);
-    console.log("[FRONTEND] CONVERSATION OPENED", selectedConversationId);
-    console.log("[FRONTEND] UNREAD COUNT RESET", selectedConversationId);
-
-    setConversations((prevList) =>
-      prevList.map((conv) =>
-        conv.id === selectedConversationId ? { ...conv, unreadCount: 0 } : conv
-      )
-    );
-  }, [selectedConversationId]);
+  if (selectedConversationId !== trackedSelectedId) {
+    setTrackedSelectedId(selectedConversationId);
+    if (selectedConversationId) {
+      setConversations((prevList) =>
+        prevList.map((conv) =>
+          conv.id === selectedConversationId ? { ...conv, unreadCount: 0 } : conv
+        )
+      );
+    }
+  }
 
   // ========================================
   // SOCKET REALTIME SIDEBAR UPDATES

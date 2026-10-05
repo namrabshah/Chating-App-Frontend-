@@ -138,3 +138,20 @@ export const toggleMessageReaction = async (
 
   return response.data;
 };
+
+
+export const searchMessages = async (
+  conversationId: number,
+  query: string
+): Promise<Message[]> => {
+  const response = await api.get<GetMessagesResponse>(
+    `/messages/${conversationId}/search`,
+    {
+      params: {
+        q: query,
+      },
+    }
+  );
+
+  return response.data.messages;
+};

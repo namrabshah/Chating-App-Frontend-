@@ -19,13 +19,13 @@ export default function UserSearch({
   useEffect(() => {
     const trimmedQuery = query.trim();
 
-    if (trimmedQuery.length < 2) {
-      setUsers([]);
-      setError("");
-      return;
-    }
-
     const timer = setTimeout(async () => {
+      if (trimmedQuery.length < 2) {
+        setUsers([]);
+        setError("");
+        setLoading(false);
+        return;
+      }
       try {
         setLoading(true);
         setError("");
