@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import axios from "axios";
 
-import { getConversationDetails } from "@/services/conversation.service";
+import { getConversationDetails, deleteConversation } from "@/services/conversation.service";
 import {
   getMessages,
   sendMessage,
@@ -102,6 +102,7 @@ function getSenderName(
 
 export function ChatWindow() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const conversationIdParam = searchParams.get("conversationId");
 
   const currentUser = useAuthStore((state) => state.user);
@@ -153,6 +154,29 @@ export function ChatWindow() {
   const [blockConfirmDialog, setBlockConfirmDialog] = useState<"block" | "unblock" | null>(null);
   const [blockActionLoading, setBlockActionLoading] = useState(false);
 
+  const [showDeleteConvModal, setShowDeleteConvModal] = useState(false);
+  const [deleteConvLoading, setDeleteConvLoading] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((prev) => (prev === msg ? null : prev));
+    }, 3000);
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (showDeleteConvModal) setShowDeleteConvModal(false);
+        if (blockConfirmDialog) setBlockConfirmDialog(null);
+        if (showBlockMenu) setShowBlockMenu(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showDeleteConvModal, blockConfirmDialog, showBlockMenu]);
+
   useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);
@@ -167,6 +191,9 @@ export function ChatWindow() {
 
   if (conversationId !== typingTrackedConversationId) {
     setTypingTrackedConversationId(conversationId);
+    setConversation(null);
+    setMessages([]);
+    setLoading(true);
     if (isOtherUserTyping) {
       setIsOtherUserTyping(false);
     }
@@ -183,6 +210,7 @@ export function ChatWindow() {
     setLoadingOlder(false);
     setShowBlockMenu(false);
     setBlockConfirmDialog(null);
+    setShowDeleteConvModal(false);
     isInitialLoadRef.current = true;
   }
 
@@ -256,6 +284,27 @@ export function ChatWindow() {
       setSendError(msg);
     } finally {
       setBlockActionLoading(false);
+    }
+  };
+
+  const handleConfirmDeleteConversation = async () => {
+    if (!conversationId || deleteConvLoading) return;
+
+    try {
+      setDeleteConvLoading(true);
+      await deleteConversation(conversationId);
+      setShowDeleteConvModal(false);
+      setShowBlockMenu(false);
+      setConversation(null);
+      setMessages([]);
+      router.push("/chat");
+      showToast("Conversation deleted");
+    } catch (err: any) {
+      console.error("Failed to delete conversation:", err);
+      const msg = err?.response?.data?.message || "Failed to delete conversation";
+      setSendError(msg);
+    } finally {
+      setDeleteConvLoading(false);
     }
   };
 
@@ -1353,16 +1402,24 @@ export function ChatWindow() {
   // NO CONVERSATION SELECTED
   // ========================================
 
+  // ========================================
+  // NO CONVERSATION SELECTED
+  // ========================================
+
   if (!conversationIdParam) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-white">
+      <div className="flex flex-1 items-center justify-center bg-gray-50/50 p-6">
         <div className="text-center">
-          <h2 className="text-xl font-semibold text-gray-800">
-            Select a conversation
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 shadow-sm border border-blue-100/50">
+            <svg className="h-8 w-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+          </div>
+          <h2 className="text-base font-semibold text-gray-800">
+            No conversation selected
           </h2>
-
-          <p className="mt-1 text-sm text-gray-500">
-            Choose a user from the sidebar to start chatting
+          <p className="mt-1 text-xs text-gray-500">
+            Select a chat to start messaging
           </p>
         </div>
       </div>
@@ -1454,7 +1511,9 @@ export function ChatWindow() {
             title="Search messages"
             aria-label="Search messages"
           >
-            🔍
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
           </button>
 
           <button
@@ -1464,38 +1523,132 @@ export function ChatWindow() {
             title="More options"
             aria-label="More options"
           >
-            ⋮
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+            </svg>
           </button>
 
           {showBlockMenu && (
-            <div className="absolute right-0 top-11 z-40 w-44 rounded-xl border border-gray-100 bg-white py-1.5 shadow-lg ring-1 ring-black/5 animate-in fade-in zoom-in-95 duration-150">
-              {blockStatus.blockedByUser ? (
+            <div className="absolute right-0 top-11 z-40 w-52 rounded-xl border border-gray-100 bg-white py-1.5 shadow-lg ring-1 ring-black/5 animate-in fade-in zoom-in-95 duration-150 divide-y divide-gray-100">
+              <div className="py-0.5">
                 <button
                   type="button"
                   onClick={() => {
                     setShowBlockMenu(false);
-                    setBlockConfirmDialog("unblock");
+                    setShowSearch(true);
                   }}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 transition"
+                  className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 transition"
                 >
-                  <span>🔓</span> Unblock User
+                  <svg className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                  <span>Search Messages</span>
                 </button>
-              ) : (
+                {blockStatus.blockedByUser ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowBlockMenu(false);
+                      setBlockConfirmDialog("unblock");
+                    }}
+                    className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs font-semibold text-emerald-600 hover:bg-emerald-50 transition"
+                  >
+                    <svg className="h-4 w-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span>Unblock User</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowBlockMenu(false);
+                      setBlockConfirmDialog("block");
+                    }}
+                    className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs font-semibold text-red-600 hover:bg-red-50 transition"
+                  >
+                    <svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                    </svg>
+                    <span>Block User</span>
+                  </button>
+                )}
+              </div>
+              <div className="py-0.5">
                 <button
                   type="button"
                   onClick={() => {
                     setShowBlockMenu(false);
-                    setBlockConfirmDialog("block");
+                    setShowDeleteConvModal(true);
                   }}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs font-semibold text-red-600 hover:bg-red-50 transition"
+                  className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs font-semibold text-red-600 hover:bg-red-50 transition"
                 >
-                  <span>🚫</span> Block User
+                  <svg className="h-4 w-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  <span>Delete Chat</span>
                 </button>
-              )}
+              </div>
             </div>
           )}
         </div>
       </div>
+
+      {/* DELETE CONVERSATION CONFIRMATION DIALOG */}
+      {showDeleteConvModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+          onClick={() => setShowDeleteConvModal(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-conv-dialog-title"
+          aria-describedby="delete-conv-dialog-desc"
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl transition-all border border-gray-100"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-600">
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </div>
+              <h3 id="delete-conv-dialog-title" className="text-base font-bold text-gray-900">
+                Delete conversation?
+              </h3>
+            </div>
+            <p id="delete-conv-dialog-desc" className="mt-3 text-xs text-gray-500 leading-relaxed">
+              This will remove this chat from your conversation list. Your messages will not be deleted for the other person.
+            </p>
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowDeleteConvModal(false)}
+                disabled={deleteConvLoading}
+                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteConversation}
+                disabled={deleteConvLoading}
+                className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-red-700 disabled:opacity-50 transition"
+              >
+                {deleteConvLoading ? (
+                  <>
+                    <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <span>Delete</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* BLOCK CONFIRMATION DIALOG */}
       {blockConfirmDialog === "block" && (
@@ -2207,6 +2360,18 @@ export function ChatWindow() {
           </>
         )}
       </div>
+
+      {/* TOAST FEEDBACK NOTIFICATION */}
+      {toastMessage && (
+        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 transform animate-in fade-in slide-in-from-bottom-3 duration-200">
+          <div className="flex items-center gap-2.5 rounded-xl bg-gray-900 px-4 py-2.5 text-xs font-medium text-white shadow-xl">
+            <svg className="h-4 w-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+            <span>{toastMessage}</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

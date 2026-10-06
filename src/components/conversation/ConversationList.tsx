@@ -277,6 +277,17 @@ export function ConversationList() {
           const updatedList = [...prevList];
           updatedList.splice(existingIndex, 1);
           return [updatedConv, ...updatedList];
+        } else {
+          getConversationDetails(convId)
+            .then((details) => {
+              if (details) {
+                setConversations((current) => [
+                  { ...details, unreadCount: isCurrentlySelected ? 0 : data.unreadCount },
+                  ...current.filter((c) => c.id !== convId),
+                ]);
+              }
+            })
+            .catch((err) => console.error("Fetch restored conv error:", err));
         }
 
         return prevList;
@@ -343,18 +354,31 @@ export function ConversationList() {
       );
     };
 
+    const handleConversationDeleted = (data: { conversationId: number }) => {
+      const convId = Number(data.conversationId);
+      if (!convId || Number.isNaN(convId)) return;
+
+      setConversations((prevList) => prevList.filter((item) => item.id !== convId));
+
+      if (selectedConversationId === convId) {
+        router.push("/chat");
+      }
+    };
+
     socket.on("new_message", handleNewMessage);
     socket.on("conversation_updated", handleConversationUpdated);
     socket.on("unread_count_updated", handleUnreadCountUpdated);
     socket.on("message_deleted", handleMessageDeleted);
+    socket.on("conversation_deleted", handleConversationDeleted);
 
     return () => {
       socket.off("new_message", handleNewMessage);
       socket.off("conversation_updated", handleConversationUpdated);
       socket.off("unread_count_updated", handleUnreadCountUpdated);
       socket.off("message_deleted", handleMessageDeleted);
+      socket.off("conversation_deleted", handleConversationDeleted);
     };
-  }, [selectedConversationId, currentUser?.id]);
+  }, [selectedConversationId, currentUser?.id, router]);
 
   // ========================================
   // CREATE / SELECT CONVERSATION
@@ -364,29 +388,36 @@ export function ConversationList() {
     try {
       setCreating(true);
 
+      // 1. Check if active conversation already exists in sidebar state or search user object
+      let targetConvId: number | null = null;
+
       const existingConversation = conversations.find(
-        (conv) => conv.otherUser.id === user.id
+        (conv) => Number(conv.otherUser.id) === Number(user.id)
       );
 
       if (existingConversation) {
-        console.log("CURRENT OPEN CONVERSATION:", existingConversation.id);
-        console.log("[FRONTEND] CONVERSATION OPENED", existingConversation.id);
-        console.log("[FRONTEND] UNREAD COUNT RESET", existingConversation.id);
+        targetConvId = existingConversation.id;
+      } else if (user.hasActiveConversation && user.conversationId) {
+        targetConvId = Number(user.conversationId);
+      }
 
+      if (targetConvId) {
+        console.log("OPENING EXISTING CONVERSATION:", targetConvId);
         setConversations((prevList) =>
           prevList.map((conv) =>
-            conv.id === existingConversation.id
+            conv.id === targetConvId
               ? { ...conv, unreadCount: 0 }
               : conv
           )
         );
 
-        router.push(`/chat?conversationId=${existingConversation.id}`);
+        router.push(`/chat?conversationId=${targetConvId}`);
         return;
       }
 
+      // 2. Otherwise create or restore 1-to-1 conversation via API
       const result = await createConversation(user.id);
-      const conversationId = result.conversation.id;
+      const conversationId = Number(result.conversation.id);
 
       const details = await getConversationDetails(conversationId);
 
@@ -394,18 +425,15 @@ export function ConversationList() {
         {
           id: conversationId,
           otherUser: details.otherUser,
-          lastMessage: null,
+          lastMessage: details.lastMessage || null,
           unreadCount: 0,
           createdAt: details.createdAt,
           updatedAt: details.updatedAt,
         },
-        ...previous,
+        ...previous.filter((c) => c.id !== conversationId),
       ]);
 
-      console.log("CURRENT OPEN CONVERSATION:", conversationId);
-      console.log("[FRONTEND] CONVERSATION OPENED", conversationId);
-      console.log("[FRONTEND] UNREAD COUNT RESET", conversationId);
-
+      console.log("OPENING NEW/RESTORED CONVERSATION:", conversationId);
       router.push(`/chat?conversationId=${conversationId}`);
     } catch (error) {
       console.error("Create conversation error:", error);

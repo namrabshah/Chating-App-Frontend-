@@ -63,3 +63,18 @@ export const getConversationDetails = async (
 
   return response.data.conversation;
 };
+
+export interface DeleteConversationResponse {
+  success: boolean;
+  message: string;
+}
+
+export const deleteConversation = async (
+  conversationId: number
+): Promise<DeleteConversationResponse> => {
+  const response = await api.delete<DeleteConversationResponse>(
+    `/conversations/${conversationId}`
+  );
+
+  return response.data;
+};

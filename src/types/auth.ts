@@ -16,6 +16,8 @@ export interface User {
   avatar?: string | null;
   isOnline?: boolean;
   lastSeen?: string | null;
+  hasActiveConversation?: boolean;
+  conversationId?: number | null;
 }
 
 export interface AuthResponse {

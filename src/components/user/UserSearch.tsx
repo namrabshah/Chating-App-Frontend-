@@ -16,6 +16,7 @@ export default function UserSearch({
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [selectingUserId, setSelectingUserId] = useState<number | null>(null);
 
   useEffect(() => {
     const trimmedQuery = query.trim();
@@ -47,6 +48,23 @@ export default function UserSearch({
     return () => clearTimeout(timer);
   }, [query]);
 
+  const handleSelectUser = async (user: User) => {
+    if (selectingUserId !== null) return;
+
+    try {
+      setSelectingUserId(user.id);
+      if (onUserSelect) {
+        await onUserSelect(user);
+      }
+      setQuery("");
+      setUsers([]);
+    } catch (err) {
+      console.error("Failed to select user:", err);
+    } finally {
+      setSelectingUserId(null);
+    }
+  };
+
   return (
     <div className="w-full">
       {/* Search Input */}
@@ -76,43 +94,66 @@ export default function UserSearch({
       {/* Search Results */}
       {users.length > 0 && (
         <div className="mt-2 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-          {users.map((user) => (
-            <button
-              key={user.id}
-              type="button"
-              onClick={() => onUserSelect?.(user)}
-              className="flex w-full items-center gap-3 px-3 py-3 text-left transition hover:bg-gray-50"
-            >
-              {/* Avatar */}
-              <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-blue-100 text-sm font-semibold text-blue-600">
-                {user.avatar ? (
-                  <img
-                    src={getAttachmentUrl(user.avatar)}
-                    alt={user.name}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  user.name.charAt(0).toUpperCase()
-                )}
+          {users.map((user) => {
+            const isSelectingThisUser = selectingUserId === user.id;
 
-                {/* Online Dot */}
-                {user.isOnline && (
-                  <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white bg-green-500" />
-                )}
-              </div>
+            return (
+              <button
+                key={user.id}
+                type="button"
+                disabled={selectingUserId !== null}
+                onClick={() => handleSelectUser(user)}
+                className="flex w-full items-center gap-3 px-3 py-3 text-left transition hover:bg-gray-50 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {/* Avatar */}
+                <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-blue-100 text-sm font-semibold text-blue-600">
+                  {user.avatar ? (
+                    <img
+                      src={getAttachmentUrl(user.avatar)}
+                      alt={user.name}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    user.name.charAt(0).toUpperCase()
+                  )}
 
-              {/* User Info */}
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-gray-900">
-                  {user.name}
-                </p>
+                  {/* Online Dot */}
+                  {user.isOnline && (
+                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white bg-green-500" />
+                  )}
+                </div>
 
-                <p className="truncate text-xs text-gray-500">
-                  {user.email}
-                </p>
-              </div>
-            </button>
-          ))}
+                {/* User Info */}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-gray-900">
+                    {user.name}
+                  </p>
+
+                  <p className="truncate text-xs text-gray-500">
+                    {user.email}
+                  </p>
+                </div>
+
+                {/* Action Button Label */}
+                <div className="shrink-0">
+                  {isSelectingThisUser ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-600 border border-blue-200">
+                      <div className="h-3 w-3 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+                      Opening...
+                    </span>
+                  ) : user.hasActiveConversation ? (
+                    <span className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-600 transition">
+                      Open Chat
+                    </span>
+                  ) : (
+                    <span className="rounded-lg bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-blue-700">
+                      Start Chat
+                    </span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
 
