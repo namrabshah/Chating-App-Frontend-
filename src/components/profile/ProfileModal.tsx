@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { useAuthStore } from "@/store/auth.store";
 import { updateMyProfile } from "@/services/user.service";
 import { getAttachmentUrl } from "@/lib/file";
+import BlockedUsersModal from "@/components/user/BlockedUsersModal";
 
 interface ProfileModalProps {
   isOpen: boolean;
@@ -23,6 +24,7 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [isBlockedModalOpen, setIsBlockedModalOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -209,8 +211,19 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
             />
           </div>
 
+          {/* Blocked Users Action */}
+          <div className="border-t border-gray-100 pt-3">
+            <button
+              type="button"
+              onClick={() => setIsBlockedModalOpen(true)}
+              className="w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-100"
+            >
+              🚫 Manage Blocked Users
+            </button>
+          </div>
+
           {/* Submit Action */}
-          <div className="pt-2">
+          <div className="pt-1">
             <button
               type="submit"
               disabled={saving}
@@ -220,6 +233,11 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
             </button>
           </div>
         </form>
+
+        <BlockedUsersModal
+          isOpen={isBlockedModalOpen}
+          onClose={() => setIsBlockedModalOpen(false)}
+        />
       </div>
     </div>
   );

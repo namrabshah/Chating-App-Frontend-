@@ -1,5 +1,5 @@
 import api from "@/lib/axios";
-import type { User } from "@/types/auth";
+import type { User, BlockStatus } from "@/types/auth";
 
 interface SearchUsersResponse {
   success: boolean;
@@ -20,6 +20,23 @@ interface UpdateProfileResponse {
   success: boolean;
   message: string;
   user: User;
+}
+
+interface BlockUserResponse {
+  success: boolean;
+  message: string;
+}
+
+interface BlockStatusResponse {
+  success: boolean;
+  isBlocked: boolean;
+  blockedByUser: boolean;
+  userBlockedMe: boolean;
+}
+
+interface BlockedUsersResponse {
+  success: boolean;
+  users: User[];
 }
 
 export const getMyProfile = async (): Promise<User> => {
@@ -53,5 +70,35 @@ export const searchUsers = async (
     },
   });
 
+  return response.data.users;
+};
+
+export const blockUser = async (
+  userId: number
+): Promise<{ success: boolean; message: string }> => {
+  const response = await api.post<BlockUserResponse>(`/users/${userId}/block`);
+  return response.data;
+};
+
+export const unblockUser = async (
+  userId: number
+): Promise<{ success: boolean; message: string }> => {
+  const response = await api.delete<BlockUserResponse>(`/users/${userId}/block`);
+  return response.data;
+};
+
+export const getBlockStatus = async (
+  userId: number
+): Promise<BlockStatus> => {
+  const response = await api.get<BlockStatusResponse>(`/users/${userId}/block-status`);
+  return {
+    isBlocked: response.data.isBlocked,
+    blockedByUser: response.data.blockedByUser,
+    userBlockedMe: response.data.userBlockedMe,
+  };
+};
+
+export const getBlockedUsers = async (): Promise<User[]> => {
+  const response = await api.get<BlockedUsersResponse>("/users/blocked");
   return response.data.users;
 };

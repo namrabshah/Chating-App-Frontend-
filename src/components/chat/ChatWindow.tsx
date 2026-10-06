@@ -20,6 +20,8 @@ import { MessageReaction } from "@/types/message";
 import { ReactionPicker } from "@/components/chat/ReactionPicker";
 
 import { useAuthStore } from "@/store/auth.store";
+import { getBlockStatus, blockUser, unblockUser } from "@/services/user.service";
+import { BlockStatus } from "@/types/auth";
 import { connectSocket } from "@/lib/socket";
 import { getToken } from "@/lib/auth";
 import {
@@ -142,6 +144,15 @@ export function ChatWindow() {
   const [searching, setSearching] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
 
+  const [blockStatus, setBlockStatus] = useState<BlockStatus>({
+    isBlocked: false,
+    blockedByUser: false,
+    userBlockedMe: false,
+  });
+  const [showBlockMenu, setShowBlockMenu] = useState(false);
+  const [blockConfirmDialog, setBlockConfirmDialog] = useState<"block" | "unblock" | null>(null);
+  const [blockActionLoading, setBlockActionLoading] = useState(false);
+
   useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);
@@ -170,8 +181,83 @@ export function ChatWindow() {
     setPage(1);
     setHasMore(true);
     setLoadingOlder(false);
+    setShowBlockMenu(false);
+    setBlockConfirmDialog(null);
     isInitialLoadRef.current = true;
   }
+
+  useEffect(() => {
+    const targetUserId = conversation?.otherUser?.id;
+    if (!targetUserId) {
+      setBlockStatus({
+        isBlocked: false,
+        blockedByUser: false,
+        userBlockedMe: false,
+      });
+      return;
+    }
+
+    let isMounted = true;
+    getBlockStatus(targetUserId)
+      .then((status) => {
+        if (isMounted) {
+          setBlockStatus(status);
+        }
+      })
+      .catch((err) => {
+        console.error("Fetch block status error:", err);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [conversation?.otherUser?.id]);
+
+  const handleConfirmBlock = async () => {
+    const targetUserId = conversation?.otherUser?.id;
+    if (!targetUserId || blockActionLoading) return;
+
+    try {
+      setBlockActionLoading(true);
+      await blockUser(targetUserId);
+      setBlockStatus((prev) => ({
+        ...prev,
+        isBlocked: true,
+        blockedByUser: true,
+      }));
+      setBlockConfirmDialog(null);
+      setShowBlockMenu(false);
+    } catch (err: any) {
+      console.error("Failed to block user:", err);
+      const msg = err?.response?.data?.message || "Failed to block user";
+      setSendError(msg);
+    } finally {
+      setBlockActionLoading(false);
+    }
+  };
+
+  const handleConfirmUnblock = async () => {
+    const targetUserId = conversation?.otherUser?.id;
+    if (!targetUserId || blockActionLoading) return;
+
+    try {
+      setBlockActionLoading(true);
+      await unblockUser(targetUserId);
+      setBlockStatus((prev) => ({
+        ...prev,
+        isBlocked: prev.userBlockedMe,
+        blockedByUser: false,
+      }));
+      setBlockConfirmDialog(null);
+      setShowBlockMenu(false);
+    } catch (err: any) {
+      console.error("Failed to unblock user:", err);
+      const msg = err?.response?.data?.message || "Failed to unblock user";
+      setSendError(msg);
+    } finally {
+      setBlockActionLoading(false);
+    }
+  };
 
   const clearTypingTimeout = () => {
     if (typingTimeoutRef.current) {
@@ -980,6 +1066,11 @@ export function ChatWindow() {
     if (!conversationId || Number.isNaN(conversationId)) return;
     if (sending) return;
 
+    if (blockStatus.isBlocked) {
+      setSendError("Messaging is blocked with this user.");
+      return;
+    }
+
     emitStopTyping(conversationId);
     clearTypingTimeout();
 
@@ -1346,8 +1437,8 @@ export function ChatWindow() {
           </div>
         </div>
 
-        {/* SEARCH TOGGLE BUTTON */}
-        <div className="flex items-center gap-2 shrink-0">
+        {/* HEADER ACTION BUTTONS */}
+        <div className="relative flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={() => {
@@ -1365,8 +1456,106 @@ export function ChatWindow() {
           >
             🔍
           </button>
+
+          <button
+            type="button"
+            onClick={() => setShowBlockMenu((prev) => !prev)}
+            className="rounded-lg p-2 text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition font-bold"
+            title="More options"
+            aria-label="More options"
+          >
+            ⋮
+          </button>
+
+          {showBlockMenu && (
+            <div className="absolute right-0 top-11 z-40 w-44 rounded-xl border border-gray-100 bg-white py-1.5 shadow-lg ring-1 ring-black/5 animate-in fade-in zoom-in-95 duration-150">
+              {blockStatus.blockedByUser ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowBlockMenu(false);
+                    setBlockConfirmDialog("unblock");
+                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 transition"
+                >
+                  <span>🔓</span> Unblock User
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowBlockMenu(false);
+                    setBlockConfirmDialog("block");
+                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs font-semibold text-red-600 hover:bg-red-50 transition"
+                >
+                  <span>🚫</span> Block User
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
+
+      {/* BLOCK CONFIRMATION DIALOG */}
+      {blockConfirmDialog === "block" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl transition-all">
+            <h3 className="text-base font-bold text-gray-900">Block this user?</h3>
+            <p className="mt-2 text-xs text-gray-500">
+              Blocked users can&apos;t send messages to you or receive messages from you.
+            </p>
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setBlockConfirmDialog(null)}
+                disabled={blockActionLoading}
+                className="rounded-xl border border-gray-200 px-4 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmBlock}
+                disabled={blockActionLoading}
+                className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50 transition"
+              >
+                {blockActionLoading ? "Blocking..." : "Block"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* UNBLOCK CONFIRMATION DIALOG */}
+      {blockConfirmDialog === "unblock" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl transition-all">
+            <h3 className="text-base font-bold text-gray-900">Unblock this user?</h3>
+            <p className="mt-2 text-xs text-gray-500">
+              They will be able to send you messages and interact with you again.
+            </p>
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setBlockConfirmDialog(null)}
+                disabled={blockActionLoading}
+                className="rounded-xl border border-gray-200 px-4 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmUnblock}
+                disabled={blockActionLoading}
+                className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50 transition"
+              >
+                {blockActionLoading ? "Unblocking..." : "Unblock"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* SEARCH PANEL BAR */}
       {showSearch && (
@@ -1881,117 +2070,142 @@ export function ChatWindow() {
 
       {/* MESSAGE INPUT / COMPOSER AREA */}
       <div className="shrink-0 border-t bg-white p-4">
-        {editingOriginalMessage && (
-          <div className="mb-3 flex items-center justify-between rounded-lg border-l-4 border-amber-500 bg-amber-50 px-3 py-2 text-xs transition">
-            <div className="min-w-0 flex-1 pr-2">
-              <div className="flex items-center gap-1.5 font-semibold text-amber-800">
-                <span>✏️ Editing message</span>
-              </div>
-              <p className="truncate text-gray-600">
-                {editingOriginalMessage.content ||
-                  getReplyPreviewLabel(editingOriginalMessage)}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={handleCancelEdit}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-amber-100 hover:text-gray-700 transition"
-              aria-label="Cancel edit"
-              title="Cancel edit"
-            >
-              ✕
-            </button>
-          </div>
-        )}
-
-        {replyingTo && !editingMessageId && (
-          <div className="mb-3 flex items-center justify-between rounded-lg border-l-4 border-blue-600 bg-blue-50 px-3 py-2 text-xs transition">
-            <div className="min-w-0 flex-1 pr-2">
-              <div className="flex items-center gap-1.5 font-semibold text-blue-700">
-                <span>↩ Replying to</span>
-                <span>
-                  {getSenderName(
-                    replyingTo.senderId,
-                    currentUser?.id,
-                    otherUser.name
-                  )}
+        {blockStatus.isBlocked ? (
+          <div className="flex items-center justify-between rounded-xl bg-gray-100 p-3.5 border border-gray-200">
+            {blockStatus.blockedByUser ? (
+              <>
+                <span className="text-xs font-medium text-gray-700">
+                  You blocked this user.
                 </span>
-              </div>
-              <p className="truncate text-gray-600">
-                {getReplyPreviewLabel(replyingTo)}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setReplyingTo(null)}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-blue-100 hover:text-gray-700 transition"
-              aria-label="Cancel reply"
-              title="Cancel reply"
-            >
-              ✕
-            </button>
+                <button
+                  type="button"
+                  onClick={() => setBlockConfirmDialog("unblock")}
+                  className="rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 transition"
+                >
+                  Unblock
+                </button>
+              </>
+            ) : (
+              <span className="text-xs font-medium text-gray-500">
+                You can&apos;t send messages to this user.
+              </span>
+            )}
           </div>
+        ) : (
+          <>
+            {editingOriginalMessage && (
+              <div className="mb-3 flex items-center justify-between rounded-lg border-l-4 border-amber-500 bg-amber-50 px-3 py-2 text-xs transition">
+                <div className="min-w-0 flex-1 pr-2">
+                  <div className="flex items-center gap-1.5 font-semibold text-amber-800">
+                    <span>✏️ Editing message</span>
+                  </div>
+                  <p className="truncate text-gray-600">
+                    {editingOriginalMessage.content ||
+                      getReplyPreviewLabel(editingOriginalMessage)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-amber-100 hover:text-gray-700 transition"
+                  aria-label="Cancel edit"
+                  title="Cancel edit"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {replyingTo && !editingMessageId && (
+              <div className="mb-3 flex items-center justify-between rounded-lg border-l-4 border-blue-600 bg-blue-50 px-3 py-2 text-xs transition">
+                <div className="min-w-0 flex-1 pr-2">
+                  <div className="flex items-center gap-1.5 font-semibold text-blue-700">
+                    <span>↩ Replying to</span>
+                    <span>
+                      {getSenderName(
+                        replyingTo.senderId,
+                        currentUser?.id,
+                        otherUser.name
+                      )}
+                    </span>
+                  </div>
+                  <p className="truncate text-gray-600">
+                    {getReplyPreviewLabel(replyingTo)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReplyingTo(null)}
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-blue-100 hover:text-gray-700 transition"
+                  aria-label="Cancel reply"
+                  title="Cancel reply"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {selectedFile && !editingMessageId && (
+              <AttachmentPreview
+                file={selectedFile}
+                onRemove={handleRemoveAttachment}
+              />
+            )}
+
+            {sendError && (
+              <p className="mb-2 text-sm text-red-500">{sendError}</p>
+            )}
+
+            <div className="flex items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                accept={ACCEPTED_FILE_TYPES}
+                onChange={handleFileChange}
+                disabled={sending || Boolean(editingMessageId)}
+              />
+
+              <button
+                type="button"
+                onClick={handleAttachClick}
+                disabled={sending || Boolean(editingMessageId)}
+                title={editingMessageId ? "Attachments disabled while editing" : "Attach file"}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-200 text-lg transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                📎
+              </button>
+
+              <input
+                type="text"
+                value={content}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                placeholder={editingMessageId ? "Edit your message..." : "Type a message..."}
+                disabled={sending}
+                className="min-w-0 flex-1 rounded-lg border border-gray-200 px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-blue-500 disabled:bg-gray-100"
+              />
+
+              <button
+                type="button"
+                onClick={handleSendMessage}
+                disabled={!canSend || !conversationId}
+                aria-label={editingMessageId ? "Save edited message" : "Send message"}
+                className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {sending
+                  ? editingMessageId
+                    ? "Saving..."
+                    : selectedFile
+                    ? "Uploading..."
+                    : "Sending..."
+                  : editingMessageId
+                  ? "Save"
+                  : "Send"}
+              </button>
+            </div>
+          </>
         )}
-
-        {selectedFile && !editingMessageId && (
-          <AttachmentPreview
-            file={selectedFile}
-            onRemove={handleRemoveAttachment}
-          />
-        )}
-
-        {sendError && (
-          <p className="mb-2 text-sm text-red-500">{sendError}</p>
-        )}
-
-        <div className="flex items-center gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            accept={ACCEPTED_FILE_TYPES}
-            onChange={handleFileChange}
-            disabled={sending || Boolean(editingMessageId)}
-          />
-
-          <button
-            type="button"
-            onClick={handleAttachClick}
-            disabled={sending || Boolean(editingMessageId)}
-            title={editingMessageId ? "Attachments disabled while editing" : "Attach file"}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-200 text-lg transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            📎
-          </button>
-
-          <input
-            type="text"
-            value={content}
-            onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
-            placeholder={editingMessageId ? "Edit your message..." : "Type a message..."}
-            disabled={sending}
-            className="min-w-0 flex-1 rounded-lg border border-gray-200 px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-blue-500 disabled:bg-gray-100"
-          />
-
-          <button
-            type="button"
-            onClick={handleSendMessage}
-            disabled={!canSend || !conversationId}
-            aria-label={editingMessageId ? "Save edited message" : "Send message"}
-            className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {sending
-              ? editingMessageId
-                ? "Saving..."
-                : selectedFile
-                ? "Uploading..."
-                : "Sending..."
-              : editingMessageId
-              ? "Save"
-              : "Send"}
-          </button>
-        </div>
       </div>
     </div>
   );

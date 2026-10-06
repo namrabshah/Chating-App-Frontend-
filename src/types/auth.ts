@@ -23,3 +23,9 @@ export interface AuthResponse {
   token: string;
   user: User;
 }
+
+export interface BlockStatus {
+  isBlocked: boolean;
+  blockedByUser: boolean;
+  userBlockedMe: boolean;
+}
