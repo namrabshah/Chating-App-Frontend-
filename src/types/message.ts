@@ -24,6 +24,9 @@ export interface Message {
   id: number;
   conversationId: number;
   senderId: number;
+  senderName?: string | null;
+  senderAvatar?: string | null;
+  type?: "TEXT" | "SYSTEM";
   content: string | null;
   isDeleted: boolean;
   deletedAt?: string | null;
@@ -48,6 +51,7 @@ export interface LastMessagePreview {
   content: string | null;
   senderId: number;
   createdAt: string;
+  type?: "TEXT" | "SYSTEM";
   attachmentUrl?: string | null;
   attachmentName?: string | null;
   attachmentType?: string | null;

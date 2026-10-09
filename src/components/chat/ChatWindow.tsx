@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import axios from "axios";
 
-import { getConversationDetails, deleteConversation } from "@/services/conversation.service";
+import { getConversationDetails, deleteConversation, Conversation, GroupMember } from "@/services/conversation.service";
 import {
   getMessages,
   sendMessage,
@@ -18,6 +18,7 @@ import {
 } from "@/services/message.services";
 import { MessageReaction } from "@/types/message";
 import { ReactionPicker } from "@/components/chat/ReactionPicker";
+import GroupInfoModal from "@/components/conversation/GroupInfoModal";
 
 import { useAuthStore } from "@/store/auth.store";
 import { getBlockStatus, blockUser, unblockUser } from "@/services/user.service";
@@ -32,18 +33,6 @@ import {
 } from "@/lib/file";
 import { AttachmentPreview } from "@/components/chat/AttachmentPreview";
 import { AttachmentMessage } from "@/components/chat/AttachmentMessage";
-
-interface ConversationDetails {
-  id: number;
-  otherUser: {
-    id: number;
-    name: string;
-    email: string;
-    avatar?: string | null;
-    isOnline?: boolean;
-    lastSeen?: string | null;
-  };
-}
 
 interface DeliveryUpdate {
   messageId: number;
@@ -64,6 +53,7 @@ interface ReadUpdate {
 interface TypingEvent {
   userId: number;
   conversationId: number;
+  userName?: string;
 }
 
 function getReplyPreviewLabel(
@@ -92,23 +82,29 @@ function getReplyPreviewLabel(
 function getSenderName(
   senderId: number,
   currentUserId?: number | null,
-  otherUserName?: string
+  fallbackName?: string,
+  members?: GroupMember[]
 ): string {
   if (currentUserId && Number(senderId) === Number(currentUserId)) {
     return "You";
   }
-  return otherUserName || "User";
+  if (members && members.length > 0) {
+    const found = members.find((m) => Number(m.id) === Number(senderId));
+    if (found) return found.name;
+  }
+  return fallbackName || "User";
 }
 
 export function ChatWindow() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const conversationIdParam = searchParams.get("conversationId");
+  const messageIdParam = searchParams.get("messageId");
+  const targetMessageId = messageIdParam ? Number(messageIdParam) : null;
 
   const currentUser = useAuthStore((state) => state.user);
 
-  const [conversation, setConversation] =
-    useState<ConversationDetails | null>(null);
+  const [conversation, setConversation] = useState<Conversation | null>(null);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
@@ -116,13 +112,15 @@ export function ChatWindow() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [isOtherUserTyping, setIsOtherUserTyping] = useState(false);
+
+  // Typing users map/list for groups & direct chats
+  const [typingUserIds, setTypingUserIds] = useState<number[]>([]);
+  const [isGroupInfoOpen, setIsGroupInfoOpen] = useState(false);
+
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
-  const [editingOriginalMessage, setEditingOriginalMessage] =
-    useState<Message | null>(null);
-  const [highlightedMessageId, setHighlightedMessageId] =
-    useState<number | null>(null);
+  const [editingOriginalMessage, setEditingOriginalMessage] = useState<Message | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
   const [messageMenuId, setMessageMenuId] = useState<number | null>(null);
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState<number | null>(null);
   const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<number | null>(null);
@@ -181,11 +179,24 @@ export function ChatWindow() {
     currentUserRef.current = currentUser;
   }, [currentUser]);
 
-  const conversationId = conversationIdParam
-    ? Number(conversationIdParam)
-    : null;
+  useEffect(() => {
+    if (targetMessageId && messages.length > 0) {
+      const el = document.getElementById(`message-${targetMessageId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        setHighlightedMessageId(targetMessageId);
+        const timer = setTimeout(() => {
+          setHighlightedMessageId(null);
+        }, 3000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [targetMessageId, messages]);
 
-  // Reset typing UI & pagination immediately when switching conversations (render-time adjust)
+  const conversationId = conversationIdParam ? Number(conversationIdParam) : null;
+  const isGroup = conversation?.type === "GROUP";
+
+  // Reset typing UI & pagination immediately when switching conversations
   const [typingTrackedConversationId, setTypingTrackedConversationId] =
     useState<number | null>(conversationId);
 
@@ -194,9 +205,7 @@ export function ChatWindow() {
     setConversation(null);
     setMessages([]);
     setLoading(true);
-    if (isOtherUserTyping) {
-      setIsOtherUserTyping(false);
-    }
+    setTypingUserIds([]);
     setReplyingTo(null);
     setEditingMessageId(null);
     setEditingOriginalMessage(null);
@@ -211,10 +220,21 @@ export function ChatWindow() {
     setShowBlockMenu(false);
     setBlockConfirmDialog(null);
     setShowDeleteConvModal(false);
+    setIsGroupInfoOpen(false);
     isInitialLoadRef.current = true;
   }
 
+  // Fetch block status ONLY for 1-to-1 direct chats
   useEffect(() => {
+    if (isGroup) {
+      setBlockStatus({
+        isBlocked: false,
+        blockedByUser: false,
+        userBlockedMe: false,
+      });
+      return;
+    }
+
     const targetUserId = conversation?.otherUser?.id;
     if (!targetUserId) {
       setBlockStatus({
@@ -239,7 +259,7 @@ export function ChatWindow() {
     return () => {
       isMounted = false;
     };
-  }, [conversation?.otherUser?.id]);
+  }, [conversation?.otherUser?.id, isGroup]);
 
   const handleConfirmBlock = async () => {
     const targetUserId = conversation?.otherUser?.id;
@@ -459,25 +479,27 @@ export function ChatWindow() {
           .filter((group) => group.count > 0);
       }
 
-      const targetIndex = nextReactions.findIndex(
+      const targetGroupIndex = nextReactions.findIndex(
         (g) => g.reaction === emoji
       );
-      const currentUserInfo = currentUser
-        ? { id: currentUser.id, name: currentUser.name }
-        : { id: 0, name: "You" };
 
-      if (targetIndex >= 0) {
-        const group = nextReactions[targetIndex];
-        nextReactions[targetIndex] = {
-          ...group,
-          count: group.count + 1,
-          users: [...(group.users || []), currentUserInfo],
+      if (targetGroupIndex !== -1) {
+        const existingUsers = nextReactions[targetGroupIndex].users || [];
+        nextReactions[targetGroupIndex] = {
+          ...nextReactions[targetGroupIndex],
+          count: nextReactions[targetGroupIndex].count + 1,
+          users: [
+            ...existingUsers,
+            { id: currentUser?.id || 0, name: currentUser?.name || "You" },
+          ],
         };
       } else {
         nextReactions.push({
           reaction: emoji,
           count: 1,
-          users: [currentUserInfo],
+          users: [
+            { id: currentUser?.id || 0, name: currentUser?.name || "You" },
+          ],
         });
       }
     }
@@ -496,7 +518,8 @@ export function ChatWindow() {
 
     try {
       const response = await toggleMessageReaction(messageId, emoji);
-      if (!response.success) {
+
+      if (!response?.success) {
         throw new Error("Reaction toggle failed");
       }
 
@@ -582,7 +605,7 @@ export function ChatWindow() {
         setSelectedFile(null);
         setContent("");
         setSendError(null);
-        setIsOtherUserTyping(false);
+        setTypingUserIds([]);
 
         try {
           await markConversationAsRead(conversationId);
@@ -630,20 +653,17 @@ export function ChatWindow() {
       if (conversationId && !Number.isNaN(conversationId)) {
         socket.emit("join_conversation", { conversationId });
         socket.emit("message_read", { conversationId });
-        console.log("[RECIPIENT] MESSAGE READ ACK SENT", { conversationId });
       }
     };
 
     const handleDisconnect = () => {
       console.log("SOCKET DISCONNECTED");
-      setIsOtherUserTyping(false);
+      setTypingUserIds([]);
       clearTypingTimeout();
       activeTypingConvIdRef.current = null;
     };
 
     const handleUserTyping = (data: TypingEvent) => {
-      console.log("[RECIPIENT] USER IS TYPING", data);
-
       if (
         !conversationId ||
         Number.isNaN(conversationId) ||
@@ -659,12 +679,12 @@ export function ChatWindow() {
         return;
       }
 
-      setIsOtherUserTyping(true);
+      setTypingUserIds((prev) =>
+        prev.includes(data.userId) ? prev : [...prev, data.userId]
+      );
     };
 
     const handleUserStopTyping = (data: TypingEvent) => {
-      console.log("[RECIPIENT] USER STOPPED TYPING", data);
-
       if (
         !conversationId ||
         Number.isNaN(conversationId) ||
@@ -680,19 +700,10 @@ export function ChatWindow() {
         return;
       }
 
-      setIsOtherUserTyping(false);
+      setTypingUserIds((prev) => prev.filter((id) => id !== data.userId));
     };
 
     const handleNewMessage = (newMessage: Message) => {
-      console.log("DELIVERY DEBUG - NEW MESSAGE:", {
-        messageId: newMessage.id,
-        conversationId: newMessage.conversationId,
-        senderId: newMessage.senderId,
-        currentUserId: currentUserRef.current?.id,
-      });
-
-      console.log("[RECIPIENT] NEW MESSAGE RECEIVED", newMessage);
-
       if (
         !conversationId ||
         Number.isNaN(conversationId) ||
@@ -729,27 +740,14 @@ export function ChatWindow() {
       }
 
       if (!isMine) {
-        // Incoming message from the other user ends their typing indicator
-        setIsOtherUserTyping(false);
-
-        console.log("DELIVERY DEBUG - SENDING ACK:", {
-          messageId: newMessage.id,
-          conversationId: newMessage.conversationId,
-        });
+        setTypingUserIds((prev) => prev.filter((id) => id !== newMessage.senderId));
 
         socket.emit("message_delivered", {
           messageId: newMessage.id,
           conversationId: newMessage.conversationId,
         });
 
-        console.log("DELIVERY DEBUG - ACK EMITTED");
-
         socket.emit("message_read", {
-          messageId: newMessage.id,
-          conversationId: newMessage.conversationId,
-        });
-
-        console.log("[RECIPIENT] MESSAGE READ ACK SENT", {
           messageId: newMessage.id,
           conversationId: newMessage.conversationId,
         });
@@ -757,8 +755,6 @@ export function ChatWindow() {
     };
 
     const handleMessageUpdated = (payload: { message?: Message } | Message) => {
-      console.log("[SOCKET] MESSAGE UPDATED RECEIVED:", payload);
-
       const updatedMessage =
         "message" in payload && payload.message
           ? payload.message
@@ -832,8 +828,6 @@ export function ChatWindow() {
     };
 
     const handleDeliveryUpdate = (data: DeliveryUpdate) => {
-      console.log("DELIVERY DEBUG - UPDATE RECEIVED BY SENDER:", data);
-
       if (
         !conversationId ||
         Number.isNaN(conversationId) ||
@@ -852,8 +846,6 @@ export function ChatWindow() {
     };
 
     const handleReadUpdate = (data: ReadUpdate) => {
-      console.log("[SENDER] MESSAGE READ UPDATED", data);
-
       if (
         !conversationId ||
         Number.isNaN(conversationId) ||
@@ -879,8 +871,6 @@ export function ChatWindow() {
       reaction: string | null;
       action: "added" | "updated" | "removed";
     }) => {
-      console.log("[SOCKET] MESSAGE REACTION UPDATED:", data);
-
       if (
         !conversationId ||
         Number.isNaN(conversationId) ||
@@ -913,6 +903,70 @@ export function ChatWindow() {
       );
     };
 
+    const handleGroupUpdated = (data: Partial<Conversation> & { conversationId: number }) => {
+      if (Number(data.conversationId) === Number(conversationId)) {
+        setConversation((prev) =>
+          prev
+            ? {
+                ...prev,
+                name: data.name ?? prev.name,
+                avatar: data.avatar !== undefined ? data.avatar : prev.avatar,
+              }
+            : prev
+        );
+      }
+    };
+
+    const handleGroupMemberAdded = (data: { conversationId: number; memberCount?: number; members?: GroupMember[] }) => {
+      if (Number(data.conversationId) === Number(conversationId)) {
+        setConversation((prev) =>
+          prev
+            ? {
+                ...prev,
+                memberCount: data.memberCount ?? (data.members ? data.members.length : prev.memberCount),
+                members: data.members ?? prev.members,
+              }
+            : prev
+        );
+      }
+    };
+
+    const handleGroupMemberRemoved = (data: { conversationId: number; memberCount?: number; members?: GroupMember[]; removedUserId?: number }) => {
+      if (Number(data.conversationId) === Number(conversationId)) {
+        if (data.removedUserId && Number(data.removedUserId) === Number(currentUserRef.current?.id)) {
+          router.push("/chat");
+          return;
+        }
+        setConversation((prev) =>
+          prev
+            ? {
+                ...prev,
+                memberCount: data.memberCount ?? (data.members ? data.members.length : prev.memberCount),
+                members: data.members ?? prev.members,
+              }
+            : prev
+        );
+      }
+    };
+
+    const handleGroupMemberLeft = (data: { conversationId: number; memberCount?: number; members?: GroupMember[]; leftUserId?: number }) => {
+      if (Number(data.conversationId) === Number(conversationId)) {
+        if (data.leftUserId && Number(data.leftUserId) === Number(currentUserRef.current?.id)) {
+          router.push("/chat");
+          return;
+        }
+        setConversation((prev) =>
+          prev
+            ? {
+                ...prev,
+                memberCount: data.memberCount ?? (data.members ? data.members.length : prev.memberCount),
+                members: data.members ?? prev.members,
+              }
+            : prev
+        );
+      }
+    };
+
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
     socket.on("new_message", handleNewMessage);
@@ -924,10 +978,14 @@ export function ChatWindow() {
     socket.on("user_typing", handleUserTyping);
     socket.on("user_stop_typing", handleUserStopTyping);
 
+    socket.on("group_updated", handleGroupUpdated);
+    socket.on("group_member_added", handleGroupMemberAdded);
+    socket.on("group_member_removed", handleGroupMemberRemoved);
+    socket.on("group_member_left", handleGroupMemberLeft);
+
     if (socket.connected && conversationId && !Number.isNaN(conversationId)) {
       socket.emit("join_conversation", { conversationId });
       socket.emit("message_read", { conversationId });
-      console.log("[RECIPIENT] MESSAGE READ ACK SENT", { conversationId });
     }
 
     return () => {
@@ -951,10 +1009,15 @@ export function ChatWindow() {
       socket.off("user_typing", handleUserTyping);
       socket.off("user_stop_typing", handleUserStopTyping);
 
-      setIsOtherUserTyping(false);
+      socket.off("group_updated", handleGroupUpdated);
+      socket.off("group_member_added", handleGroupMemberAdded);
+      socket.off("group_member_removed", handleGroupMemberRemoved);
+      socket.off("group_member_left", handleGroupMemberLeft);
+
+      setTypingUserIds([]);
       clearTypingTimeout();
     };
-  }, [conversationId]);
+  }, [conversationId, router]);
 
   // ========================================
   // SCROLL & PAGINATION HELPERS
@@ -1082,7 +1145,6 @@ export function ChatWindow() {
 
     if (!conversationId || Number.isNaN(conversationId)) return;
 
-    // Reuse the existing connected socket — never create a new connection per keystroke
     const socket = socketRef.current;
     if (!socket || !socket.connected) return;
 
@@ -1115,7 +1177,7 @@ export function ChatWindow() {
     if (!conversationId || Number.isNaN(conversationId)) return;
     if (sending) return;
 
-    if (blockStatus.isBlocked) {
+    if (!isGroup && blockStatus.isBlocked) {
       setSendError("Messaging is blocked with this user.");
       return;
     }
@@ -1133,8 +1195,6 @@ export function ChatWindow() {
       try {
         setSending(true);
         setSendError(null);
-
-        console.log("CALLING EDIT MESSAGE API:", editingMessageId, text);
 
         const response = await editMessage(editingMessageId, text);
 
@@ -1170,7 +1230,6 @@ export function ChatWindow() {
         setEditingOriginalMessage(null);
       } catch (error) {
         console.error("EDIT MESSAGE API ERROR:", error);
-
         let message = "Failed to edit message. Please try again.";
 
         if (axios.isAxiosError(error)) {
@@ -1205,17 +1264,12 @@ export function ChatWindow() {
       setSending(true);
       setSendError(null);
 
-      console.log("1. SEND CLICKED");
-      console.log("2. CALLING MESSAGE API WITH REPLY ID:", replyingTo?.id);
-
       const response = await sendMessage(
         conversationId,
         text || undefined,
         selectedFile,
         replyingTo?.id
       );
-
-      console.log("3. MESSAGE API RESPONSE:", response);
 
       if (!response?.success || !response?.message) {
         throw new Error("Message API returned invalid response");
@@ -1238,7 +1292,7 @@ export function ChatWindow() {
       setContent("");
       setSelectedFile(null);
       setReplyingTo(null);
-      setIsOtherUserTyping(false);
+      setTypingUserIds([]);
 
       requestAnimationFrame(() => {
         scrollToBottom(true);
@@ -1291,7 +1345,6 @@ export function ChatWindow() {
 
     try {
       setSearching(true);
-
       const results = await searchMessages(conversationId, query);
       setSearchResults(results || []);
     } catch (error) {
@@ -1322,9 +1375,7 @@ export function ChatWindow() {
 
     setTimeout(() => {
       const element = document.getElementById(`message-${messageId}`);
-      if (!element) {
-        return;
-      }
+      if (!element) return;
 
       element.scrollIntoView({
         behavior: "smooth",
@@ -1338,10 +1389,6 @@ export function ChatWindow() {
       }, 1500);
     }, 50);
   };
-
-  // ========================================
-  // KEYBOARD HANDLER
-  // ========================================
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Escape") {
@@ -1358,10 +1405,6 @@ export function ChatWindow() {
       handleSendMessage();
     }
   };
-
-  // ========================================
-  // MESSAGE STATUS ICON RENDERER
-  // ========================================
 
   const renderMessageStatus = (message: Message, isMine: boolean) => {
     if (!isMine) return null;
@@ -1398,13 +1441,27 @@ export function ChatWindow() {
     );
   };
 
-  // ========================================
-  // NO CONVERSATION SELECTED
-  // ========================================
+  // Helper for typing text
+  const getTypingText = () => {
+    if (typingUserIds.length === 0) return null;
+    if (isGroup) {
+      const members = conversation?.members || [];
+      const typingNames = typingUserIds.map((id) => {
+        const found = members.find((m) => Number(m.id) === Number(id));
+        return found ? found.name : "Member";
+      });
 
-  // ========================================
-  // NO CONVERSATION SELECTED
-  // ========================================
+      if (typingNames.length === 1) {
+        return `${typingNames[0]} is typing...`;
+      } else if (typingNames.length === 2) {
+        return `${typingNames[0]} and ${typingNames[1]} are typing...`;
+      } else {
+        return `${typingNames[0]} and ${typingNames.length - 1} others are typing...`;
+      }
+    } else {
+      return "typing...";
+    }
+  };
 
   if (!conversationIdParam) {
     return (
@@ -1456,36 +1513,70 @@ export function ChatWindow() {
       ? Boolean(content.trim()) && !sending
       : Boolean(content.trim() || selectedFile) && !sending;
 
+  const typingText = getTypingText();
+
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col bg-white">
+      {/* Group Info Modal */}
+      {conversation && isGroup && (
+        <GroupInfoModal
+          isOpen={isGroupInfoOpen}
+          onClose={() => setIsGroupInfoOpen(false)}
+          conversation={conversation}
+          onGroupUpdated={(updated) => setConversation(updated)}
+          onLeftGroup={() => router.push("/chat")}
+        />
+      )}
+
       {/* CHAT HEADER */}
       <div className="flex shrink-0 items-center justify-between border-b px-5 py-3 bg-white">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-blue-100 font-semibold text-blue-600">
-            {otherUser.avatar ? (
-              <img
-                src={getAttachmentUrl(otherUser.avatar)}
-                alt={otherUser.name}
-                className="h-full w-full object-cover"
-              />
-            ) : (
-              otherUser.name.charAt(0).toUpperCase()
-            )}
+        <div
+          className={`flex items-center gap-3 min-w-0 ${isGroup ? "cursor-pointer hover:opacity-80 transition" : ""}`}
+          onClick={() => {
+            if (isGroup) setIsGroupInfoOpen(true);
+          }}
+        >
+          {isGroup ? (
+            <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-indigo-100 font-bold text-indigo-600 border border-indigo-200 shadow-sm">
+              {conversation.avatar ? (
+                <img
+                  src={getAttachmentUrl(conversation.avatar)}
+                  alt={conversation.name || "Group"}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                (conversation.name || "G").charAt(0).toUpperCase()
+              )}
+            </div>
+          ) : (
+            <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-blue-100 font-semibold text-blue-600">
+              {otherUser?.avatar ? (
+                <img
+                  src={getAttachmentUrl(otherUser.avatar)}
+                  alt={otherUser.name}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                otherUser?.name ? otherUser.name.charAt(0).toUpperCase() : "?"
+              )}
 
-            {otherUser.isOnline && (
-              <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white bg-green-500" />
-            )}
-          </div>
+              {otherUser?.isOnline && (
+                <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white bg-green-500" />
+              )}
+            </div>
+          )}
 
           <div className="min-w-0">
-            <h2 className="truncate font-semibold text-gray-800">
-              {otherUser.name}
+            <h2 className="truncate font-semibold text-gray-800 flex items-center gap-1.5">
+              {isGroup ? conversation.name || "Group Chat" : otherUser?.name}
             </h2>
 
             <p className="text-xs text-gray-500">
-              {isOtherUserTyping ? (
-                <span className="text-blue-500">typing...</span>
-              ) : otherUser.isOnline ? (
+              {typingText ? (
+                <span className="text-blue-500 font-medium">{typingText}</span>
+              ) : isGroup ? (
+                `${conversation.memberCount || conversation.members?.length || 0} members`
+              ) : otherUser?.isOnline ? (
                 "Online"
               ) : (
                 "Offline"
@@ -1496,6 +1587,20 @@ export function ChatWindow() {
 
         {/* HEADER ACTION BUTTONS */}
         <div className="relative flex items-center gap-2 shrink-0">
+          {isGroup && (
+            <button
+              type="button"
+              onClick={() => setIsGroupInfoOpen(true)}
+              className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-200 transition flex items-center gap-1"
+              title="Group Info"
+            >
+              <svg className="h-4 w-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span>Info</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => {
@@ -1531,6 +1636,22 @@ export function ChatWindow() {
           {showBlockMenu && (
             <div className="absolute right-0 top-11 z-40 w-52 rounded-xl border border-gray-100 bg-white py-1.5 shadow-lg ring-1 ring-black/5 animate-in fade-in zoom-in-95 duration-150 divide-y divide-gray-100">
               <div className="py-0.5">
+                {isGroup && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowBlockMenu(false);
+                      setIsGroupInfoOpen(true);
+                    }}
+                    className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 transition"
+                  >
+                    <svg className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span>Group Info</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={() => {
@@ -1544,36 +1665,40 @@ export function ChatWindow() {
                   </svg>
                   <span>Search Messages</span>
                 </button>
-                {blockStatus.blockedByUser ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowBlockMenu(false);
-                      setBlockConfirmDialog("unblock");
-                    }}
-                    className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs font-semibold text-emerald-600 hover:bg-emerald-50 transition"
-                  >
-                    <svg className="h-4 w-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span>Unblock User</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowBlockMenu(false);
-                      setBlockConfirmDialog("block");
-                    }}
-                    className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs font-semibold text-red-600 hover:bg-red-50 transition"
-                  >
-                    <svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-                    </svg>
-                    <span>Block User</span>
-                  </button>
+
+                {!isGroup && (
+                  blockStatus.blockedByUser ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowBlockMenu(false);
+                        setBlockConfirmDialog("unblock");
+                      }}
+                      className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs font-semibold text-emerald-600 hover:bg-emerald-50 transition"
+                    >
+                      <svg className="h-4 w-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span>Unblock User</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowBlockMenu(false);
+                        setBlockConfirmDialog("block");
+                      }}
+                      className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs font-semibold text-red-600 hover:bg-red-50 transition"
+                    >
+                      <svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                      </svg>
+                      <span>Block User</span>
+                    </button>
+                  )
                 )}
               </div>
+
               <div className="py-0.5">
                 <button
                   type="button"
@@ -1599,10 +1724,6 @@ export function ChatWindow() {
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
           onClick={() => setShowDeleteConvModal(false)}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="delete-conv-dialog-title"
-          aria-describedby="delete-conv-dialog-desc"
         >
           <div
             className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl transition-all border border-gray-100"
@@ -1614,12 +1735,12 @@ export function ChatWindow() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                 </svg>
               </div>
-              <h3 id="delete-conv-dialog-title" className="text-base font-bold text-gray-900">
+              <h3 className="text-base font-bold text-gray-900">
                 Delete conversation?
               </h3>
             </div>
-            <p id="delete-conv-dialog-desc" className="mt-3 text-xs text-gray-500 leading-relaxed">
-              This will remove this chat from your conversation list. Your messages will not be deleted for the other person.
+            <p className="mt-3 text-xs text-gray-500 leading-relaxed">
+              This will remove this chat from your list. Messages will not be deleted for others.
             </p>
             <div className="mt-6 flex items-center justify-end gap-3">
               <button
@@ -1636,14 +1757,7 @@ export function ChatWindow() {
                 disabled={deleteConvLoading}
                 className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-red-700 disabled:opacity-50 transition"
               >
-                {deleteConvLoading ? (
-                  <>
-                    <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                    <span>Deleting...</span>
-                  </>
-                ) : (
-                  <span>Delete</span>
-                )}
+                {deleteConvLoading ? "Deleting..." : "Delete"}
               </button>
             </div>
           </div>
@@ -1726,13 +1840,8 @@ export function ChatWindow() {
                   }
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    handleSearchMessages();
-                  }
-
-                  if (event.key === "Escape") {
-                    handleResetSearch();
-                  }
+                  if (event.key === "Enter") handleSearchMessages();
+                  if (event.key === "Escape") handleResetSearch();
                 }}
                 placeholder="Search messages..."
                 autoFocus
@@ -1746,7 +1855,6 @@ export function ChatWindow() {
                     setSearchResults([]);
                   }}
                   className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-600"
-                  title="Clear input"
                 >
                   ✕
                 </button>
@@ -1766,38 +1874,28 @@ export function ChatWindow() {
               type="button"
               onClick={handleResetSearch}
               className="rounded-lg p-2 text-gray-500 hover:bg-gray-200 hover:text-gray-700 transition shrink-0"
-              title="Close search"
-              aria-label="Close search"
             >
               ✕
             </button>
           </div>
 
-          {searching && (
-            <p className="mt-2.5 text-xs text-gray-500 animate-pulse">
-              Searching messages...
-            </p>
-          )}
-
           {!searching && searchQuery.trim() !== "" && searchResults.length > 0 && (
             <div className="mt-2.5 max-h-60 overflow-y-auto rounded-lg border bg-white shadow-sm divide-y">
               <div className="bg-gray-50 px-3 py-1.5 text-xs font-semibold text-gray-500 flex justify-between items-center">
                 <span>Search results</span>
-                <span>
-                  {searchResults.length} message
-                  {searchResults.length === 1 ? "" : "s"} found
-                </span>
+                <span>{searchResults.length} message(s) found</span>
               </div>
               {searchResults.map((message) => {
                 const senderDisplayName = getSenderName(
                   message.senderId,
                   currentUser?.id,
-                  otherUser.name
+                  message.senderName || otherUser?.name,
+                  conversation.members
                 );
-                const timeStr = new Date(message.createdAt).toLocaleTimeString(
-                  [],
-                  { hour: "2-digit", minute: "2-digit" }
-                );
+                const timeStr = new Date(message.createdAt).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                });
 
                 return (
                   <button
@@ -1821,12 +1919,6 @@ export function ChatWindow() {
                 );
               })}
             </div>
-          )}
-
-          {!searching && searchQuery.trim() !== "" && searchResults.length === 0 && (
-            <p className="mt-2 text-sm text-gray-500">
-              No messages found
-            </p>
           )}
         </div>
       )}
@@ -1852,11 +1944,37 @@ export function ChatWindow() {
           </div>
         ) : (
           <div className="flex w-full flex-col gap-2">
-            {messages.map((message) => {
-              const isMine =
-                Number(message.senderId) !== Number(otherUser.id);
+            {messages.map((message, index) => {
+              // Handle System Messages
+              if (message.type === "SYSTEM") {
+                return (
+                  <div key={message.id} className="my-2 flex justify-center w-full">
+                    <span className="rounded-full bg-gray-100 px-3.5 py-1 text-[11px] font-medium text-gray-500 border border-gray-200/60 shadow-2xs">
+                      {message.content}
+                    </span>
+                  </div>
+                );
+              }
+
+              const isMine = Number(message.senderId) === Number(currentUser?.id);
               const isHighlighted = highlightedMessageId === message.id;
               const isDeletedMessage = Boolean(message.isDeleted);
+
+              // Check if previous message was from same sender
+              const prevMsg = index > 0 ? messages[index - 1] : null;
+              const showSenderHeader =
+                isGroup &&
+                !isMine &&
+                (!prevMsg ||
+                  prevMsg.type === "SYSTEM" ||
+                  Number(prevMsg.senderId) !== Number(message.senderId));
+
+              const senderDisplayName = getSenderName(
+                message.senderId,
+                currentUser?.id,
+                message.senderName || otherUser?.name,
+                conversation.members
+              );
 
               return (
                 <div
@@ -1875,7 +1993,6 @@ export function ChatWindow() {
                           type="button"
                           onClick={() => handleStartEditMessage(message)}
                           className="rounded p-1 text-xs text-gray-400 hover:text-amber-600 transition"
-                          aria-label="Edit message"
                           title="Edit message"
                         >
                           ✏️
@@ -1889,7 +2006,6 @@ export function ChatWindow() {
                           )
                         }
                         className="rounded p-1 text-xs text-gray-400 hover:text-amber-500 transition"
-                        aria-label="Add reaction"
                         title="React"
                       >
                         🙂
@@ -1898,7 +2014,6 @@ export function ChatWindow() {
                         type="button"
                         onClick={() => setReplyingTo(message)}
                         className="rounded p-1 text-xs text-gray-400 hover:text-blue-600 transition"
-                        aria-label="Reply to message"
                         title="Reply"
                       >
                         ↩
@@ -1907,7 +2022,6 @@ export function ChatWindow() {
                         type="button"
                         onClick={() => setMessageMenuId(message.id)}
                         className="rounded p-1 text-xs text-gray-400 hover:text-gray-700 transition"
-                        aria-label="Message options"
                         title="Message options"
                       >
                         ⋯
@@ -1916,6 +2030,13 @@ export function ChatWindow() {
                   )}
 
                   <div className={`relative flex flex-col max-w-[75%] sm:max-w-[70%] ${isMine ? "items-end" : "items-start"}`}>
+                    {/* Sender Name for Group incoming messages */}
+                    {showSenderHeader && (
+                      <span className="mb-0.5 pl-1 text-[11px] font-bold text-blue-600">
+                        {senderDisplayName}
+                      </span>
+                    )}
+
                     {reactionPickerMessageId === message.id && !isDeletedMessage && (
                       <ReactionPicker
                         onSelectReaction={(emoji) =>
@@ -1957,7 +2078,8 @@ export function ChatWindow() {
                               getSenderName(
                                 message.replyToMessage.senderId,
                                 currentUser?.id,
-                                otherUser.name
+                                otherUser?.name,
+                                conversation.members
                               )}
                           </div>
                           <div className="truncate opacity-80">
@@ -1997,16 +2119,6 @@ export function ChatWindow() {
                               className={`ml-1 font-normal italic ${
                                 isMine ? "text-blue-200" : "text-gray-400"
                               }`}
-                              title={
-                                message.editedAt
-                                  ? `Edited ${new Date(
-                                      message.editedAt
-                                    ).toLocaleTimeString([], {
-                                      hour: "2-digit",
-                                      minute: "2-digit",
-                                    })}`
-                                  : "Edited"
-                              }
                             >
                               · edited
                             </span>
@@ -2041,11 +2153,6 @@ export function ChatWindow() {
                                     rGroup.reaction
                                   );
                                 }}
-                                aria-label={`Reaction ${rGroup.reaction}, count ${rGroup.count}${
-                                  userNamesList
-                                    ? `, reacted by ${userNamesList}`
-                                    : ""
-                                }`}
                                 className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition cursor-pointer select-none ${
                                   isMyReactionGroup
                                     ? "border-blue-300 bg-blue-50 text-blue-700 shadow-sm font-semibold ring-1 ring-blue-200"
@@ -2057,18 +2164,6 @@ export function ChatWindow() {
                                   {rGroup.count}
                                 </span>
                               </button>
-
-                              {userNamesList && (
-                                <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover/pill:flex flex-col items-center z-30 pointer-events-none">
-                                  <div className="rounded-md bg-gray-900/90 backdrop-blur-sm px-2.5 py-1 text-[11px] font-medium text-white shadow-lg whitespace-nowrap">
-                                    <span className="font-semibold mr-1">
-                                      {rGroup.reaction}
-                                    </span>
-                                    {userNamesList}
-                                  </div>
-                                  <div className="w-1.5 h-1.5 bg-gray-900/90 rotate-45 -mt-1"></div>
-                                </div>
-                              )}
                             </div>
                           );
                         })}
@@ -2086,7 +2181,6 @@ export function ChatWindow() {
                           )
                         }
                         className="rounded p-1 text-xs text-gray-400 hover:text-amber-500 transition"
-                        aria-label="Add reaction"
                         title="React"
                       >
                         🙂
@@ -2095,7 +2189,6 @@ export function ChatWindow() {
                         type="button"
                         onClick={() => setReplyingTo(message)}
                         className="rounded p-1 text-xs text-gray-400 hover:text-blue-600 transition"
-                        aria-label="Reply to message"
                         title="Reply"
                       >
                         ↩
@@ -2105,67 +2198,37 @@ export function ChatWindow() {
 
                   {messageMenuId === message.id && !isDeletedMessage && (
                     <div className="absolute right-0 top-0 z-20 mt-2 w-44 rounded-xl border border-gray-200 bg-white p-2 shadow-lg">
-                      {!isMine ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setReplyingTo(message);
-                              setMessageMenuId(null);
-                            }}
-                            className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
-                            aria-label="Reply to message"
-                          >
-                            Reply
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDeleteConfirmMessageId(message.id);
-                              setMessageMenuId(null);
-                            }}
-                            className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
-                            aria-label="Delete for me"
-                          >
-                            Delete for Me
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setReplyingTo(message);
-                              setMessageMenuId(null);
-                            }}
-                            className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
-                            aria-label="Reply to message"
-                          >
-                            Reply
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDeleteConfirmMessageId(message.id);
-                              setMessageMenuId(null);
-                            }}
-                            className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
-                            aria-label="Delete message"
-                          >
-                            Delete
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              handleStartEditMessage(message);
-                              setMessageMenuId(null);
-                            }}
-                            className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
-                            aria-label="Edit message"
-                          >
-                            Edit
-                          </button>
-                        </>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReplyingTo(message);
+                          setMessageMenuId(null);
+                        }}
+                        className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
+                      >
+                        Reply
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDeleteConfirmMessageId(message.id);
+                          setMessageMenuId(null);
+                        }}
+                        className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
+                      >
+                        Delete
+                      </button>
+                      {isMine && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleStartEditMessage(message);
+                            setMessageMenuId(null);
+                          }}
+                          className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
+                        >
+                          Edit
+                        </button>
                       )}
                     </div>
                   )}
@@ -2183,7 +2246,6 @@ export function ChatWindow() {
                             type="button"
                             onClick={() => setDeleteConfirmMessageId(null)}
                             className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                            aria-label="Cancel"
                           >
                             Cancel
                           </button>
@@ -2193,7 +2255,6 @@ export function ChatWindow() {
                               void handleDeleteMessage(message, "me");
                             }}
                             className="w-full rounded-lg bg-gray-800 px-3 py-2 text-sm font-medium text-white hover:bg-gray-900"
-                            aria-label="Delete for me"
                           >
                             Delete for Me
                           </button>
@@ -2204,7 +2265,6 @@ export function ChatWindow() {
                                 void handleDeleteMessage(message, "everyone");
                               }}
                               className="w-full rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700"
-                              aria-label="Delete for everyone"
                             >
                               Delete for Everyone
                             </button>
@@ -2223,7 +2283,7 @@ export function ChatWindow() {
 
       {/* MESSAGE INPUT / COMPOSER AREA */}
       <div className="shrink-0 border-t bg-white p-4">
-        {blockStatus.isBlocked ? (
+        {!isGroup && blockStatus.isBlocked ? (
           <div className="flex items-center justify-between rounded-xl bg-gray-100 p-3.5 border border-gray-200">
             {blockStatus.blockedByUser ? (
               <>
@@ -2261,8 +2321,6 @@ export function ChatWindow() {
                   type="button"
                   onClick={handleCancelEdit}
                   className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-amber-100 hover:text-gray-700 transition"
-                  aria-label="Cancel edit"
-                  title="Cancel edit"
                 >
                   ✕
                 </button>
@@ -2278,7 +2336,8 @@ export function ChatWindow() {
                       {getSenderName(
                         replyingTo.senderId,
                         currentUser?.id,
-                        otherUser.name
+                        replyingTo.senderName || otherUser?.name,
+                        conversation.members
                       )}
                     </span>
                   </div>
@@ -2290,8 +2349,6 @@ export function ChatWindow() {
                   type="button"
                   onClick={() => setReplyingTo(null)}
                   className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-blue-100 hover:text-gray-700 transition"
-                  aria-label="Cancel reply"
-                  title="Cancel reply"
                 >
                   ✕
                 </button>
@@ -2343,7 +2400,6 @@ export function ChatWindow() {
                 type="button"
                 onClick={handleSendMessage}
                 disabled={!canSend || !conversationId}
-                aria-label={editingMessageId ? "Save edited message" : "Send message"}
                 className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {sending
